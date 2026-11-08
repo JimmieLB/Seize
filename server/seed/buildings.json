@@ -1,0 +1,47 @@
+[
+  {
+    "id": "hq",
+    "income": 1000,
+    "note": "Each player's headquarters — maps give every player exactly one."
+  },
+  {
+    "id": "city",
+    "income": 1000,
+    "note": ""
+  },
+  {
+    "id": "factory",
+    "income": 500,
+    "note": "Builds land units."
+  },
+  {
+    "id": "airport",
+    "income": 500,
+    "note": "Builds air units."
+  },
+  {
+    "id": "port",
+    "income": 500,
+    "note": "Builds sea units. Ships can move into ports."
+  },
+  {
+    "id": "barracks",
+    "income": 500,
+    "note": "All infantry get +2 attack per Barracks"
+  },
+  {
+    "id": "tower",
+    "income": 500,
+    "note": "All vehicles get +1 attack per Comm Tower"
+  },
+  {
+    "id": "silo",
+    "income": 500,
+    "note": ""
+  },
+  {
+    "id": "flag",
+    "income": 1500,
+    "note": "+25% to all sources of income per flag"
+  }
+]

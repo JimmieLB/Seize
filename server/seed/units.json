@@ -1,0 +1,173 @@
+[
+  {
+    "id": "recon",
+    "sprite": 0,
+    "name": "Recon",
+    "type": "land",
+    "price": 4000,
+    "speed": 7,
+    "attack": 4,
+    "defense": 3,
+    "traits": [
+      "speedy"
+    ]
+  },
+  {
+    "id": "supply",
+    "sprite": 1,
+    "name": "Supply Truck",
+    "type": "land",
+    "price": 5000,
+    "speed": 6,
+    "attack": 0,
+    "defense": 2,
+    "traits": [
+      "resupply"
+    ]
+  },
+  {
+    "id": "apc",
+    "sprite": 2,
+    "name": "APC",
+    "type": "land",
+    "price": 5000,
+    "speed": 5,
+    "attack": 0,
+    "defense": 3,
+    "traits": [
+      "transport"
+    ]
+  },
+  {
+    "id": "tank",
+    "sprite": 3,
+    "name": "Tank",
+    "type": "land",
+    "price": 7000,
+    "speed": 6,
+    "attack": 6,
+    "defense": 5,
+    "traits": [
+      "armored",
+      "treads"
+    ]
+  },
+  {
+    "id": "artillery",
+    "sprite": 4,
+    "name": "Artillery",
+    "type": "land",
+    "price": 6000,
+    "speed": 6,
+    "attack": 7,
+    "defense": 2,
+    "traits": [
+      "antiAir",
+      "ranged"
+    ]
+  },
+  {
+    "id": "fighter",
+    "sprite": 5,
+    "name": "Fighter",
+    "type": "air",
+    "price": 20000,
+    "speed": 9,
+    "attack": 7,
+    "defense": 5,
+    "traits": [
+      "antiAir"
+    ]
+  },
+  {
+    "id": "helicopter",
+    "sprite": 6,
+    "name": "Helicopter",
+    "type": "air",
+    "price": 9000,
+    "speed": 6,
+    "attack": 6,
+    "defense": 3,
+    "traits": []
+  },
+  {
+    "id": "transport",
+    "sprite": 7,
+    "name": "Transport Copter",
+    "type": "air",
+    "price": 5000,
+    "speed": 6,
+    "attack": 0,
+    "defense": 2,
+    "traits": [
+      "transport"
+    ]
+  },
+  {
+    "id": "lander",
+    "sprite": 8,
+    "name": "Lander",
+    "type": "sea",
+    "price": 12000,
+    "speed": 6,
+    "attack": 0,
+    "defense": 4,
+    "traits": [
+      "heavyTransport"
+    ]
+  },
+  {
+    "id": "battleship",
+    "sprite": 9,
+    "name": "Battleship",
+    "type": "sea",
+    "price": 28000,
+    "speed": 5,
+    "attack": 9,
+    "defense": 8,
+    "traits": [
+      "armored",
+      "ranged"
+    ]
+  },
+  {
+    "id": "gunboat",
+    "sprite": 10,
+    "name": "Gunboat",
+    "type": "sea",
+    "price": 6000,
+    "speed": 7,
+    "attack": 5,
+    "defense": 3,
+    "traits": [
+      "speedy"
+    ]
+  },
+  {
+    "id": "infantry",
+    "sprite": 11,
+    "name": "Infantry",
+    "type": "land",
+    "price": 1000,
+    "speed": 3,
+    "attack": 2,
+    "defense": 1,
+    "traits": [
+      "captures"
+    ]
+  },
+  {
+    "id": "mech",
+    "sprite": 12,
+    "name": "Mech",
+    "type": "land",
+    "price": 3000,
+    "speed": 2,
+    "attack": 4,
+    "defense": 2,
+    "traits": [
+      "captures",
+      "antiArmor"
+    ]
+  }
+]
