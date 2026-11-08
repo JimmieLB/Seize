@@ -1,8 +1,8 @@
 // In-memory map model used by the editor (and later the game).
 // Layers are flat row-major arrays: index = y * width + x.
-//   terrain[i]: 0 land, 1 water
+//   terrain[i]: 0 land, 1 water, 2 mountain
 //   roads[i]:   0 none, 1 road (a road on water renders as a bridge)
-//   objects[i]: null | { kind, owner }   (kind is a building kind or "flag")
+//   objects[i]: null | { kind, owner }   (kind is a building kind, "flag" or "blockade")
 
 import { MAP_LIMITS } from "../../shared/mapFormat.js";
 
@@ -13,6 +13,8 @@ export const PLAYERS = [
   { label: "Green", color: "#5cb85c" },
   { label: "Orange", color: "#f0a030" },
 ];
+
+export const TERRAIN = { land: 0, water: 1, mountain: 2 };
 
 export function createMap({ name = "Untitled map", width = 20, height = 14, players = 2 } = {}) {
   const cells = width * height;
@@ -74,39 +76,54 @@ export function applyTool(map, x, y, tool, owner) {
   const index = y * map.width + x;
   const changed = [[x, y]];
   const none = { changed: [] };
+  const refuse = (message) => ({ changed: [], message });
+  const object = map.objects[index];
 
   switch (tool) {
     case "land":
-      if (map.terrain[index] === 0) return none;
-      map.terrain[index] = 0;
+      if (map.terrain[index] === TERRAIN.land) return none;
+      map.terrain[index] = TERRAIN.land;
       return { changed };
     case "water":
-      if (map.terrain[index] === 1 && !map.objects[index]) return none;
-      map.terrain[index] = 1;
-      map.objects[index] = null;
+      if (map.terrain[index] === TERRAIN.water && !object) return none;
+      map.terrain[index] = TERRAIN.water;
+      map.objects[index] = null; // roads stay and become bridges
       return { changed };
-    case "road":
-      if (map.roads[index] === 1 && !map.objects[index]) return none;
-      map.roads[index] = 1;
-      map.objects[index] = null;
-      return { changed };
-    case "erase":
-      if (!map.roads[index] && !map.objects[index]) return none;
+    case "mountain":
+      if (map.terrain[index] === TERRAIN.mountain) return none;
+      map.terrain[index] = TERRAIN.mountain;
       map.roads[index] = 0;
       map.objects[index] = null;
       return { changed };
+    case "road":
+      if (map.terrain[index] === TERRAIN.mountain) return refuse("Roads can't go on mountains.");
+      if (map.roads[index] === 1 && (!object || object.kind === "blockade")) return none;
+      map.roads[index] = 1;
+      if (object?.kind !== "blockade") map.objects[index] = null; // blockades can sit on roads
+      return { changed };
+    case "erase":
+      if (!map.roads[index] && !object) return none;
+      map.roads[index] = 0;
+      map.objects[index] = null;
+      return { changed };
+    case "blockade":
+      if (map.terrain[index] === TERRAIN.water) return refuse("Blockades can't go on water.");
+      if (map.terrain[index] === TERRAIN.mountain) return refuse("Blockades can't go on mountains.");
+      if (object?.kind === "blockade") return none;
+      map.objects[index] = { kind: "blockade", owner: 0 };
+      return { changed };
     default: {
       // Building kinds and "flag".
-      if (map.terrain[index] === 1) return { changed: [], message: "Buildings and flags can't go on water." };
-      if (tool === "hq" && owner === 0) return { changed: [], message: "Pick a player for the HQ." };
-      const current = map.objects[index];
-      if (current && current.kind === tool && current.owner === owner) return none;
+      if (map.terrain[index] === TERRAIN.water) return refuse("Buildings and flags can't go on water.");
+      if (map.terrain[index] === TERRAIN.mountain) return refuse("Buildings and flags can't go on mountains.");
+      if (tool === "hq" && owner === 0) return refuse("Pick a player for the HQ.");
+      if (object && object.kind === tool && object.owner === owner) return none;
       if (tool === "hq") {
         // One HQ per player: remove the old one.
-        map.objects.forEach((object, other) => {
-          if (object?.kind === "hq" && object.owner === owner && other !== index) {
-            map.objects[other] = null;
-            changed.push([other % map.width, Math.floor(other / map.width)]);
+        map.objects.forEach((other, otherIndex) => {
+          if (other?.kind === "hq" && other.owner === owner && otherIndex !== index) {
+            map.objects[otherIndex] = null;
+            changed.push([otherIndex % map.width, Math.floor(otherIndex / map.width)]);
           }
         });
       }
@@ -167,7 +184,7 @@ export function mirrorTargets(map, mode, x, y, owner = 0) {
 export function summarize(map) {
   const owners = Array.from({ length: map.players + 1 }, () => ({ buildings: 0, flags: 0, hq: false }));
   for (const object of map.objects) {
-    if (!object) continue;
+    if (!object || object.kind === "blockade") continue;
     const entry = owners[object.owner];
     if (object.kind === "flag") entry.flags += 1;
     else entry.buildings += 1;

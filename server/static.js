@@ -16,6 +16,9 @@ const contentTypes = {
   ".ico": "image/x-icon",
   ".txt": "text/plain; charset=utf-8",
   ".woff2": "font/woff2",
+  ".wav": "audio/wav",
+  ".mp3": "audio/mpeg",
+  ".ogg": "audio/ogg",
   ".wasm": "application/wasm",
 };
 

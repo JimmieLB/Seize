@@ -1,4 +1,5 @@
-// Admin login: a shared password unlocks editing of maps, units and buildings.
+// Admin login: a shared password unlocks editing units, buildings and published maps
+// (anyone can publish a new map; only admins can change or delete one afterwards).
 //
 // The password comes from the ADMIN_PASSWORD environment variable (set it on Railway); the
 // fallback below is for local development. Logging in returns a signed token
@@ -55,6 +56,22 @@ export function isAdmin(request) {
   const [issuedAt, signature] = token.split(".");
   if (!issuedAt || !signature || Date.now() - Number(issuedAt) > tokenLifetimeMs) return false;
   return safeEqual(signature, sign(issuedAt));
+}
+
+// Anyone may publish new maps, but at most 20 per address per hour (admins are exempt).
+const maxMapsPerHour = 20;
+const mapCreations = new Map(); // address -> [timestamps]
+
+export function allowMapCreation(request) {
+  if (isAdmin(request)) return;
+  const address = clientAddress(request);
+  const now = Date.now();
+  const recent = (mapCreations.get(address) ?? []).filter((time) => now - time < 60 * 60 * 1000);
+  if (recent.length >= maxMapsPerHour) {
+    throw Object.assign(new Error("You've published a lot of maps recently. Try again later."), { status: 429 });
+  }
+  recent.push(now);
+  mapCreations.set(address, recent);
 }
 
 /** Throws 403 unless the request carries a valid admin token. */

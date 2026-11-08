@@ -5,7 +5,7 @@
 //   name: string,
 //   width, height: integer tile counts,
 //   players: integer (2-4),
-//   terrain: string of width*height chars, "0" = land, "1" = water (row-major),
+//   terrain: string of width*height chars, "0" = land, "1" = water, "2" = mountain (row-major),
 //   roads:   string of width*height chars, "0" = none, "1" = road / bridge,
 //   objects: [{ x, y, kind, owner }]  owner 0 = neutral, 1..players = player
 // }
@@ -19,7 +19,8 @@ export const MAP_LIMITS = {
 };
 
 export const BUILDING_KINDS = ["hq", "city", "factory", "airport", "port", "barracks", "tower", "silo"];
-export const OBJECT_KINDS = [...BUILDING_KINDS, "flag"];
+// Blockades are obstacles, not buildings: no owner, no income, can sit on roads, destroyed by attacks.
+export const OBJECT_KINDS = [...BUILDING_KINDS, "flag", "blockade"];
 
 function fail(message) {
   throw Object.assign(new Error(message), { status: 400 });
@@ -46,14 +47,17 @@ export function validateMap(input) {
   checkRange(players, "Player count", MAP_LIMITS.minPlayers, MAP_LIMITS.maxPlayers);
 
   const cells = width * height;
-  const layer = (value, label) => {
-    if (typeof value !== "string" || value.length !== cells || /[^01]/.test(value)) {
+  const layer = (value, label, allowed) => {
+    if (typeof value !== "string" || value.length !== cells || !allowed.test(value)) {
       fail(`${label} data is invalid.`);
     }
     return value;
   };
-  const terrain = layer(input.terrain, "Terrain");
-  const roads = layer(input.roads, "Road");
+  const terrain = layer(input.terrain, "Terrain", /^[012]*$/);
+  const roads = layer(input.roads, "Road", /^[01]*$/);
+  for (let index = 0; index < cells; index += 1) {
+    if (terrain[index] === "2" && roads[index] === "1") fail("Roads can't be built on mountains.");
+  }
 
   if (!Array.isArray(input.objects) || input.objects.length > cells) fail("Object data is invalid.");
   const occupied = new Set();
@@ -68,8 +72,13 @@ export function validateMap(input) {
     const index = y * width + x;
     if (occupied.has(index)) fail("Two objects share a tile.");
     occupied.add(index);
-    if (terrain[index] === "1") fail("Buildings and flags can't be placed on water.");
-    if (roads[index] === "1") fail("Buildings and flags can't be placed on roads.");
+    if (terrain[index] === "1") fail("Buildings, flags and blockades can't be placed on water.");
+    if (terrain[index] === "2") fail("Buildings, flags and blockades can't be placed on mountains.");
+    if (kind === "blockade") {
+      if (owner !== 0) fail("Blockades don't belong to a player.");
+    } else if (roads[index] === "1") {
+      fail("Buildings and flags can't be placed on roads."); // blockades can sit on roads
+    }
     if (kind === "hq") {
       if (owner === 0) fail("Each HQ must belong to a player.");
       if (hqOwners.has(owner)) fail(`Player ${owner} has more than one HQ.`);

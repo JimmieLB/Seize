@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import {
   CAPTURE_TARGET,
+  BLOCKADE_HP,
   MAX_HP,
   PRODUCTION,
   attackBonus,
+  attackRange,
   attackTargets,
   buildingAt,
   buyError,
@@ -26,6 +28,7 @@ import {
   unitSpeed,
 } from "../shared/gameRules.js";
 import { api } from "./api.js";
+import { isMuted, playSound, preloadSounds, setMuted } from "./sounds.js";
 import { MapView } from "./map/MapView.js";
 import { PLAYERS, fromSaved } from "./map/mapModel.js";
 import { getSheet } from "./map/renderMap.js";
@@ -34,7 +37,9 @@ import { KIND_LABELS, arrowTiles, unitTile } from "./map/tiles.js";
 
 const POLL_MS = 1000;
 const formatFunds = (value) => `$${value.toLocaleString()}`;
-const RANGE_TINT = "rgba(70, 160, 255, 0.35)";
+const RANGE_TINT = "rgba(70, 160, 255, 0.35)"; // where a unit can move (dragging, or after a click)
+const ATTACK_RANGE_TINT = "rgba(255, 150, 30, 0.45)"; // where a ranged unit can hit (double click)
+const DOUBLE_CLICK_MS = 400;
 const TARGET_TINT = "rgba(255, 60, 60, 0.45)";
 const DROP_TINT = "rgba(76, 217, 100, 0.5)";
 const DIGIT_TILE = 180; // tiles 180-189 are the digits 0-9 (cargo count on transports)
@@ -64,22 +69,50 @@ function extendPath(drag, map, game, cell) {
 }
 
 
-function GameScreen({ room, playerId, onLeave }) {
+/** `spectator`: watching a live game — everything updates, but nothing can be clicked or changed. */
+function GameScreen({ room, playerId, onLeave, spectator = false }) {
   const canvasRef = useRef(null);
   const viewRef = useRef(null);
   const modelRef = useRef(null); // map model drawn by the view; property owners are synced into it
   const handlersRef = useRef({});
   const dragRef = useRef(null); // { unit, def, reach, path } while dragging a unit
   const lastActionRef = useRef(null);
+  const previousGameRef = useRef(null); // last game state seen, to detect turn changes and deaths
   const [setup, setSetup] = useState(null); // { map (saved format), unitDefs }
   const [game, setGame] = useState(null);
   const [shop, setShop] = useState(null); // { x, y, kind, side } of the building being bought from
   const [selectedId, setSelectedId] = useState(null); // unit choosing an action (capture / attack / wait)
+  // Range highlight from clicking a unit: { unitId, mode: "move" | "attack" }.
+  const [inspect, setInspect] = useState(null);
+  const lastUnitClickRef = useRef(null); // { unitId, time }, to spot double clicks
   const [droppingId, setDroppingId] = useState(null); // cargo unit being dropped from the selected transport
   const [hover, setHover] = useState(null);
   const [error, setError] = useState("");
   const [toast, setToast] = useState(null); // { text, tone }
   const [busy, setBusy] = useState(false);
+  const [hideResult, setHideResult] = useState(false); // dismissed the win/defeat screen to look at the map
+  const [muted, setMutedState] = useState(isMuted);
+
+  useEffect(preloadSounds, []);
+
+  function toggleMute() {
+    setMuted(!muted);
+    setMutedState(!muted);
+  }
+
+  // Sounds: a unit disappearing = it died; the active seat changing = a new turn.
+  useEffect(() => {
+    if (!game) return;
+    const previous = previousGameRef.current;
+    previousGameRef.current = game;
+    if (!previous || previous.version === game.version) return; // first load: stay quiet
+    const alive = new Set(game.units.map((unit) => unit.id));
+    if (previous.units.some((unit) => !alive.has(unit.id))) playSound("explode");
+    const turnChanged = previous.active !== game.active || previous.turn !== game.turn;
+    if (turnChanged && !game.winner) {
+      playSound(!spectator && game.seats[game.active].playerId === playerId ? "myTurn" : "otherTurn");
+    }
+  }, [game]);
 
   const notify = (text, tone = "error") => setToast({ text, tone });
   // Only ever move forward: a slow poll must not overwrite a newer state from our own action.
@@ -103,6 +136,7 @@ function GameScreen({ room, playerId, onLeave }) {
           onHover: (cell) => setHover(cell),
         });
         view.setGrid(false);
+        view.setBorderVisible(false); // only shown while choosing where to move a unit
         modelRef.current = fromSaved(map);
         view.setMap(modelRef.current, { fit: true });
         viewRef.current = view;
@@ -128,9 +162,18 @@ function GameScreen({ room, playerId, onLeave }) {
 
   const defsById = setup ? new Map(setup.unitDefs.map((def) => [def.id, def])) : new Map();
   const mySeatIndex = game ? game.seats.findIndex((seat) => seat.playerId === playerId) : -1;
-  const mySeat = game?.seats[mySeatIndex];
-  const myTurn = Boolean(game) && mySeatIndex === game.active;
+  const mySeat = spectator ? undefined : game?.seats[mySeatIndex];
+  const gameOver = Boolean(game?.winner);
+  const myTurn = Boolean(game) && !spectator && !gameOver && mySeatIndex === game.active;
   const activeSeat = game?.seats[game.active];
+  const winnerSeat = gameOver ? game.seats.find((seat) => seat.owner === game.winner) : null;
+  const iWon = gameOver && winnerSeat?.playerId === playerId;
+  const iLost = Boolean(mySeat?.defeated);
+
+  // A defeated player who chose "Keep watching" still sees the final result when the game ends.
+  useEffect(() => {
+    if (gameOver) setHideResult(false);
+  }, [gameOver]);
   const selected = myTurn ? game.units.find((unit) => unit.id === selectedId && !unit.acted) ?? null : null;
   const selectedDef = selected ? defsById.get(selected.unitId) : null;
   const targets = selected ? attackTargets(game, setup.unitDefs, mySeatIndex, selected) : [];
@@ -158,11 +201,16 @@ function GameScreen({ room, playerId, onLeave }) {
           badges,
           health: hpOf(unit) < MAX_HP ? hpOf(unit) : undefined, // health bar only when damaged
         };
-      }),
+      }).concat(
+        // Damaged blockades show a health bar too (the blockade sprite is part of the map).
+        (game.blockades ?? [])
+          .filter((blockade) => blockade.hp < BLOCKADE_HP)
+          .map((blockade) => ({ x: blockade.x, y: blockade.y, health: (blockade.hp / BLOCKADE_HP) * 100 })),
+      ),
     );
   }, [game, setup]);
 
-  // Captured buildings/flags change colour.
+  // Captured buildings/flags change colour; broken blockades disappear.
   useEffect(() => {
     const model = modelRef.current;
     if (!game || !model || !viewRef.current) return;
@@ -173,6 +221,14 @@ function GameScreen({ room, playerId, onLeave }) {
         viewRef.current.markDirty(property.x, property.y);
       }
     }
+    model.objects.forEach((object, index) => {
+      const x = index % model.width;
+      const y = Math.floor(index / model.width);
+      if (object?.kind === "blockade" && !game.blockades?.some((blockade) => blockade.x === x && blockade.y === y)) {
+        model.objects[index] = null;
+        viewRef.current.markDirty(x, y);
+      }
+    });
   }, [game]);
 
   // Tell everyone what just happened (attacks, captures).
@@ -208,15 +264,66 @@ function GameScreen({ room, playerId, onLeave }) {
         const index = arrow.y * width + arrow.x;
         cells.set(index, { ...cells.get(index), ...arrow });
       }
-    } else if (selected) {
+    } else {
+      for (const tile of inspectTiles()) cells.set(tile.y * width + tile.x, tile);
+    }
+    if (!drag && selected) {
       cells.set(selected.y * width + selected.x, { x: selected.x, y: selected.y, tile: CURSOR_TILE });
       for (const target of targets) cells.set(target.y * width + target.x, { x: target.x, y: target.y, tint: TARGET_TINT });
       for (const tile of dropTargets) cells.set(tile.y * width + tile.x, { x: tile.x, y: tile.y, tint: DROP_TINT });
     }
     view.setOverlay([...cells.values()]);
+    view.setBorderVisible(Boolean(drag));
   }
 
   useEffect(renderOverlay);
+
+  /** Tiles for the click/double-click range highlight (recomputed from the current game state). */
+  function inspectTiles() {
+    const unit = inspect && game.units.find((current) => current.id === inspect.unitId && !current.carriedBy);
+    if (!unit) return [];
+    const def = defsById.get(unit.unitId);
+    const { width, height } = setup.map;
+    if (inspect.mode === "attack") {
+      const { min, max } = attackRange(def);
+      const tiles = [];
+      for (let dy = -max; dy <= max; dy += 1) {
+        for (let dx = -max; dx <= max; dx += 1) {
+          const gap = Math.abs(dx) + Math.abs(dy);
+          const x = unit.x + dx;
+          const y = unit.y + dy;
+          if (gap >= min && gap <= max && x >= 0 && y >= 0 && x < width && y < height) {
+            tiles.push({ x, y, tint: ATTACK_RANGE_TINT });
+          }
+        }
+      }
+      return tiles;
+    }
+    // Where it could go on its turn (ignores whether it has already moved this turn).
+    return [...reachable(game, setup.map, def, unit, setup.unitDefs).keys()].map((index) => ({
+      x: index % width,
+      y: Math.floor(index / width),
+      tint: RANGE_TINT,
+    }));
+  }
+
+  /**
+   * Click on a unit shows where it can move; a quick second click on a ranged unit shows where
+   * it can attack. Returns true if this click was such a double click.
+   */
+  function inspectUnit(unit) {
+    const now = Date.now();
+    const last = lastUnitClickRef.current;
+    lastUnitClickRef.current = { unitId: unit.id, time: now };
+    const ranged = attackRange(defsById.get(unit.unitId)).min > 1;
+    const doubleClick = last?.unitId === unit.id && now - last.time < DOUBLE_CLICK_MS;
+    if (doubleClick && ranged) {
+      setInspect({ unitId: unit.id, mode: "attack" });
+      return true;
+    }
+    setInspect({ unitId: unit.id, mode: "move" });
+    return false;
+  }
 
   function startDrag(unit) {
     const def = defsById.get(unit.unitId);
@@ -246,6 +353,7 @@ function GameScreen({ room, playerId, onLeave }) {
       notify("Units can't stop on another unit.");
       return;
     }
+    setInspect(null);
     const updated = await gameAction("move", { unitId: drag.unit.id, path: drag.path });
     const moved = updated?.units.find((unit) => unit.id === drag.unit.id);
     if (moved && !moved.carriedBy) setSelectedId(drag.unit.id); // after moving, pick capture / attack / wait
@@ -253,16 +361,13 @@ function GameScreen({ room, playerId, onLeave }) {
 
   function clickUnit(unit) {
     // Attacking: with a unit selected, clicking an enemy in range attacks it.
-    if (selected && unit.owner !== selected.owner) {
-      if (targets.some((target) => target.id === unit.id)) {
-        gameAction("attack", { unitId: selected.id, targetId: unit.id }).then((updated) => updated && setSelectedId(null));
-      } else {
-        notify(selectedDef.attack > 0 ? "That target is out of range." : `${selectedDef.name} can't attack.`);
-      }
+    if (selected && unit.owner !== selected.owner && targets.some((target) => sameCell(target, unit))) {
+      attackTile(unit);
       return;
     }
-    if (unit.owner !== mySeat?.owner) return;
-    if (!myTurn) return notify("Wait for your turn.");
+    const doubleClick = inspectUnit(unit); // highlight its range (any unit, any time)
+    if (unit.owner !== mySeat?.owner || !myTurn) return;
+    if (doubleClick) return; // showing a ranged unit's attack range, not moving it
     if (canMove(unit)) return startDrag(unit);
     if (unit.acted) return notify("That unit can't act again until your next turn.");
     setSelectedId(unit.id); // moved but hasn't acted yet
@@ -279,6 +384,13 @@ function GameScreen({ room, playerId, onLeave }) {
   handlersRef.current.drop = dropDrag;
   handlersRef.current.click = (cell) => {
     if (!game || !setup) return;
+    if (spectator) {
+      // Spectators can only look: clicking a unit shows its range.
+      const unit = unitAt(game, cell.x, cell.y);
+      if (unit) inspectUnit(unit);
+      else setInspect(null);
+      return;
+    }
     if (dropping) {
       if (dropTargets.some((tile) => sameCell(tile, cell))) {
         gameAction("drop", { unitId: selected.id, cargoId: dropping.id, x: cell.x, y: cell.y }).then(() => setDroppingId(null));
@@ -289,7 +401,9 @@ function GameScreen({ room, playerId, onLeave }) {
     }
     const unit = unitAt(game, cell.x, cell.y);
     if (unit) return clickUnit(unit);
+    if (selected && targets.some((target) => sameCell(target, cell))) return attackTile(cell); // a blockade
     setSelectedId(null);
+    setInspect(null);
     const building = buildingAt(game, cell.x, cell.y);
     if (!building || !PRODUCTION[building.kind]) return setShop(null);
     if (!myTurn) return notify("Wait for your turn.");
@@ -298,6 +412,10 @@ function GameScreen({ room, playerId, onLeave }) {
     const side = (viewRef.current?.cellScreenX(cell.x) ?? 0) < 0.5 ? "right" : "left";
     return setShop({ x: cell.x, y: cell.y, kind: building.kind, side });
   };
+
+  function attackTile({ x, y }) {
+    gameAction("attack", { unitId: selected.id, x, y }).then((updated) => updated && setSelectedId(null));
+  }
 
   /** Sends an action; resolves to the new game state, or null if it was refused. */
   async function gameAction(action, body = {}) {
@@ -325,17 +443,32 @@ function GameScreen({ room, playerId, onLeave }) {
   const canCapture = selected && !captureError(game, setup.unitDefs, mySeatIndex, selected.id);
   const progress = selected ? captureProgress(game, selected) : 0;
   const hoverTarget = selected && hover ? targets.find((target) => sameCell(target, hover)) : null;
-  const preview = hoverTarget ? previewAttack(game, setup.unitDefs, selected, hoverTarget) : null;
+  const preview = hoverTarget ? previewAttack(game, setup.unitDefs, selected, hoverTarget.x, hoverTarget.y) : null;
+  const hoverTargetName = hoverTarget
+    ? hoverTarget.kind === "blockade" ? "Blockade" : defsById.get(hoverTarget.unit.unitId).name
+    : "";
 
   return (
     <div className="game-screen">
       <canvas ref={canvasRef} className="game-canvas" />
-      <button className="btn btn-red game-leave" onClick={onLeave}>Leave room</button>
+      <div className="game-top-left">
+        <button className="btn btn-red" onClick={onLeave}>{spectator ? "Stop watching" : "Leave room"}</button>
+        <button
+          className="btn btn-gray btn-small game-mute"
+          onClick={toggleMute}
+          aria-pressed={muted}
+          title={muted ? "Sound off" : "Sound on"}
+          aria-label={muted ? "Turn sound on" : "Turn sound off"}
+        >
+          {muted ? "🔇" : "🔊"}
+        </button>
+        {spectator && <span className="spectating-badge">Spectating</span>}
+      </div>
 
       {game && (
-        <div className="turn-banner" style={{ "--owner": PLAYERS[activeSeat.owner].color }}>
-          <span>Turn {game.turn}</span>
-          <strong>{myTurn ? "Your turn" : `${activeSeat.name}'s turn`}</strong>
+        <div className="turn-banner" style={{ "--owner": PLAYERS[(winnerSeat ?? activeSeat).owner].color }}>
+          <span>{gameOver ? "Game over" : `Turn ${game.turn}`}</span>
+          <strong>{gameOver ? `${winnerSeat.name} wins` : myTurn ? "Your turn" : `${activeSeat.name}'s turn`}</strong>
         </div>
       )}
 
@@ -343,12 +476,16 @@ function GameScreen({ room, playerId, onLeave }) {
         <div className="game-info">
           <strong>{room.name}</strong>
           {game.seats.map((seat, index) => (
-            <span key={seat.playerId} className={index === game.active ? "seat-active" : ""}>
+            <span
+              key={seat.playerId}
+              className={seat.defeated ? "seat-defeated" : index === game.active && !gameOver ? "seat-active" : ""}
+            >
               <i style={{ background: PLAYERS[seat.owner].color }} />
               <span className="seat-name">
                 {seat.name}
                 {seat.playerId === playerId ? " (you)" : ""}
                 {!connected(seat.playerId) ? " (left)" : ""}
+                {seat.defeated ? " (defeated)" : ""}
               </span>
               <b>{formatFunds(seat.funds)}</b>
               <small title="Income per day">+{formatFunds(incomeFor(game, seat.owner))}</small>
@@ -398,11 +535,14 @@ function GameScreen({ room, playerId, onLeave }) {
             <p className="action-note">Click a green tile to drop the {defsById.get(dropping.unitId).name}.</p>
           ) : preview ? (
             <p className="action-note">
-              Attack {hoverTarget && defsById.get(hoverTarget.unitId).name}: deal <b>{preview.dealt}%</b>
+              Attack {hoverTargetName}: deal{" "}
+              {hoverTarget.kind === "blockade"
+                ? <b>{preview.dealt} of {hoverTarget.blockade.hp}</b>
+                : <b>{preview.dealt}%</b>}
               {preview.counter > 0 ? <>, take <b>{preview.counter}%</b> back</> : null}
             </p>
           ) : targets.length > 0 ? (
-            <p className="action-note">Click a red enemy to attack.</p>
+            <p className="action-note">Click a red target to attack.</p>
           ) : null}
           <div className="action-buttons">
             {canCapture && (
@@ -418,9 +558,9 @@ function GameScreen({ room, playerId, onLeave }) {
         </section>
       )}
 
-      {game && (
+      {game && !spectator && (
         <button className="btn btn-green game-end-turn" disabled={!myTurn || busy} onClick={() => gameAction("end-turn")}>
-          {myTurn ? "End turn" : "Waiting..."}
+          {gameOver ? "Game over" : iLost ? "Defeated" : myTurn ? "End turn" : "Waiting..."}
         </button>
       )}
 
@@ -457,6 +597,38 @@ function GameScreen({ room, playerId, onLeave }) {
             })}
           </ul>
         </section>
+      )}
+
+      {(gameOver || iLost) && !hideResult && (
+        <div className="game-result-backdrop">
+          <section
+            className={`panel game-result${iWon ? " game-result-win" : ""}`}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="result-title"
+            style={{ "--owner": PLAYERS[(winnerSeat ?? mySeat).owner].color }}
+          >
+            {gameOver ? (
+              <>
+                <p className="game-result-kicker">{iWon ? "You captured the last HQ" : "Game over"}</p>
+                <h2 id="result-title">{iWon ? "Victory!" : `${winnerSeat.name} wins!`}</h2>
+                <p className="game-result-detail">
+                  {iWon ? "Every other player has lost their HQ." : iLost ? "Your HQ was captured." : "Their army took the last HQ."}
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="game-result-kicker">Your HQ was captured</p>
+                <h2 id="result-title">Defeated</h2>
+                <p className="game-result-detail">The others are still fighting. You can stay and watch.</p>
+              </>
+            )}
+            <div className="modal-actions">
+              <button className="btn btn-gray" onClick={() => setHideResult(true)}>{gameOver ? "View map" : "Keep watching"}</button>
+              <button className="btn btn-green" onClick={onLeave}>Back to lobby</button>
+            </div>
+          </section>
+        </div>
       )}
 
       {toast && <div className={`game-toast game-toast-${toast.tone}`} role="status">{toast.text}</div>}

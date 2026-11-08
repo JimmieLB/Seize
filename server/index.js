@@ -23,7 +23,7 @@ import {
   upgradeGame,
   waitError,
 } from "../shared/gameRules.js";
-import { isAdmin, login, requireAdmin } from "./admin.js";
+import { allowMapCreation, isAdmin, login, requireAdmin } from "./admin.js";
 import { createStaticHandler } from "./static.js";
 
 const directory = path.dirname(fileURLToPath(import.meta.url));
@@ -124,7 +124,8 @@ function normalizeRoom(room) {
     upgradeGame(room.game, room.gameMap);
     // Don't let the game stall on a player who left: skip their turn.
     const connected = (playerId) => players.some((player) => player.id === playerId);
-    if (!connected(room.game.seats[room.game.active].playerId)) endTurn(room.game, connected, room.gameUnits);
+    const activePlayer = room.game.seats[room.game.active].playerId;
+    if (!room.game.winner && !connected(activePlayer)) endTurn(room.game, connected, room.gameUnits);
   }
   if (room.mapId && room.status === "waiting" && !maps.some((map) => map.id === room.mapId)) room.mapId = null;
   return players;
@@ -234,7 +235,7 @@ async function handleMapRequest(request, response, mapId) {
       return send(response, 200, { maps: full ? maps : maps.map(mapSummary) });
     }
     if (request.method === "POST") {
-      requireAdmin(request);
+      allowMapCreation(request); // anyone can publish a new map (rate-limited); only admins can change it later
       const map = {
         id: randomUUID(),
         ...validateMap(await readJson(request, maxMapRequestBytes)),
@@ -404,12 +405,13 @@ async function handleRequest(request, response) {
   const playerId = validateText(body.playerId, "Player ID", 64);
   if (action === "join") {
     const playerName = validateText(body.playerName, "Player name", 20);
-    if (room.password && !passwordMatches(body.password, room.password)) {
-      return send(response, 403, { error: "That room password is incorrect." });
-    }
     const player = room.players.find((current) => current.id === playerId);
     normalizeRoom(room);
     const hasSeat = room.game?.seats.some((seat) => seat.playerId === playerId);
+    // Players coming back to their own room/game (e.g. after a refresh) don't need the password again.
+    if (room.password && !player && !hasSeat && !passwordMatches(body.password, room.password)) {
+      return send(response, 403, { error: "That room password is incorrect." });
+    }
     if (!player && room.status === "playing" && !hasSeat) {
       return send(response, 409, { error: "This game has already started." });
     }
@@ -468,6 +470,7 @@ async function handleRequest(request, response) {
     player.lastSeen = Date.now();
     const seatIndex = room.game.seats.findIndex((seat) => seat.playerId === playerId);
     if (seatIndex === -1) return send(response, 403, { error: "You aren't playing in this game." });
+    if (room.game.winner) return send(response, 409, { error: "The game is over." });
 
     if (action === "buy") {
       const { x, y, unitId } = body;
@@ -480,10 +483,10 @@ async function handleRequest(request, response) {
       if (error) return send(response, 400, { error });
       applyMove(room.game, unitId, path);
     } else if (action === "attack") {
-      const { unitId, targetId } = body;
-      const error = attackError(room.game, room.gameUnits, seatIndex, unitId, targetId);
+      const { unitId, x, y } = body; // the tile to attack: an enemy unit or a blockade
+      const error = attackError(room.game, room.gameUnits, seatIndex, unitId, x, y);
       if (error) return send(response, 400, { error });
-      applyAttack(room.game, room.gameUnits, unitId, targetId);
+      applyAttack(room.game, room.gameUnits, unitId, x, y);
     } else if (action === "capture") {
       const error = captureError(room.game, room.gameUnits, seatIndex, body.unitId);
       if (error) return send(response, 400, { error });

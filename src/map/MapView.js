@@ -1,5 +1,8 @@
 // Babylon.js view of a tile map: a textured plane under an orthographic camera.
 // Map cell (x, y) covers world x in [x, x + 1] and world y in [-y - 1, -y].
+// Behind the map sits an endless ocean; the map texture includes a ring of ocean tiles around
+// the map so its edges get proper shorelines and blend into that ocean. The camera can't be
+// moved off the map.
 import { Engine } from "@babylonjs/core/Engines/engine";
 import { Scene } from "@babylonjs/core/scene";
 import { Camera } from "@babylonjs/core/Cameras/camera";
@@ -11,9 +14,11 @@ import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import { DynamicTexture } from "@babylonjs/core/Materials/Textures/dynamicTexture";
 import { Texture } from "@babylonjs/core/Materials/Textures/texture";
 import { drawCell, drawMap, drawTile } from "./renderMap.js";
-import { TILE } from "./tiles.js";
+import { TILE, WATER } from "./tiles.js";
 
 const TEXTURE_SCALE = 2; // texture pixels per sheet pixel (keeps grid lines thin)
+const MARGIN = 1; // ring of ocean tiles drawn around the map, in tiles
+const OCEAN_SIZE = 512; // the background ocean plane, in tiles (far bigger than any view)
 const MIN_ZOOM = 2; // half the visible height, in tiles
 const MAX_ZOOM = 40;
 
@@ -36,10 +41,11 @@ export class MapView {
     this.panFrom = null;
     this.spaceHeld = false;
     this.panWithLeftButton = false; // when true, left-drag pans instead of painting (view-only)
+    this.showBorder = true; // outline around the map (see setBorderVisible)
 
     this.engine = new Engine(canvas, false, { stencil: false, preserveDrawingBuffer: false }, true);
     this.scene = new Scene(this.engine);
-    this.scene.clearColor = Color4.FromHexString("#cfd8deff");
+    this.scene.clearColor = Color4.FromHexString("#71d5f5ff"); // ocean blue, never really visible
 
     this.camera = new FreeCamera("camera", new Vector3(0, 0, -10), this.scene);
     this.camera.mode = Camera.ORTHOGRAPHIC_CAMERA;
@@ -96,9 +102,11 @@ export class MapView {
   buildMesh() {
     this.mapMesh?.dispose(false, true);
     const { width, height } = this.map;
+    const paddedWidth = width + 2 * MARGIN;
+    const paddedHeight = height + 2 * MARGIN;
     this.texture = new DynamicTexture(
       "map",
-      { width: width * TILE * TEXTURE_SCALE, height: height * TILE * TEXTURE_SCALE },
+      { width: paddedWidth * TILE * TEXTURE_SCALE, height: paddedHeight * TILE * TEXTURE_SCALE },
       this.scene,
       false,
       Texture.NEAREST_SAMPLINGMODE,
@@ -108,25 +116,74 @@ export class MapView {
     const material = new StandardMaterial("map", this.scene);
     material.disableLighting = true;
     material.emissiveTexture = this.texture;
-    this.mapMesh = CreatePlane("map", { width, height }, this.scene);
+    this.mapMesh = CreatePlane("map", { width: paddedWidth, height: paddedHeight }, this.scene);
     this.mapMesh.material = material;
     this.mapMesh.position.set(width / 2, -height / 2, 0);
     this.mapMesh.isPickable = false;
+    this.buildOcean();
   }
 
-  /** Marks a cell (and its neighbours, whose autotiles depend on it) for redraw. */
+  /** A huge plane tiled with open water, behind the map, lined up with the map's grid. */
+  buildOcean() {
+    if (!this.ocean) {
+      const size = TILE * TEXTURE_SCALE;
+      const texture = new DynamicTexture("ocean", { width: size, height: size }, this.scene, false, Texture.NEAREST_SAMPLINGMODE);
+      const ctx = texture.getContext();
+      ctx.imageSmoothingEnabled = false;
+      drawTile(ctx, this.sheet, WATER.center, 0, 0, size);
+      texture.update();
+      texture.wrapU = Texture.WRAP_ADDRESSMODE;
+      texture.wrapV = Texture.WRAP_ADDRESSMODE;
+      texture.uScale = OCEAN_SIZE;
+      texture.vScale = OCEAN_SIZE;
+      const material = new StandardMaterial("ocean", this.scene);
+      material.disableLighting = true;
+      material.emissiveTexture = texture;
+      this.ocean = CreatePlane("ocean", { size: OCEAN_SIZE }, this.scene);
+      this.ocean.material = material;
+      this.ocean.isPickable = false;
+    }
+    // Integer edges (OCEAN_SIZE is even) keep the repeating water tiles on the map's grid.
+    this.ocean.position.set(Math.round(this.map.width / 2), -Math.round(this.map.height / 2), 0.05);
+  }
+
+  /**
+   * Marks a cell (and its neighbours, whose autotiles depend on it) for redraw. Neighbours can be
+   * in the ocean ring around the map, so dirty cells are keyed on the padded grid.
+   */
   markDirty(x, y) {
+    const paddedWidth = this.map.width + 2 * MARGIN;
     for (let dy = -1; dy <= 1; dy += 1) {
       for (let dx = -1; dx <= 1; dx += 1) {
         const cx = x + dx;
         const cy = y + dy;
-        if (cx >= 0 && cy >= 0 && cx < this.map.width && cy < this.map.height) this.dirty.add(cy * this.map.width + cx);
+        if (cx >= -MARGIN && cy >= -MARGIN && cx < this.map.width + MARGIN && cy < this.map.height + MARGIN) {
+          this.dirty.add((cy + MARGIN) * paddedWidth + (cx + MARGIN));
+        }
       }
     }
   }
 
   redrawAll() {
     this.dirtyAll = true;
+  }
+
+  /** Shows or hides the outline around the map (redraws just the ocean ring it's drawn in). */
+  setBorderVisible(visible) {
+    if (this.showBorder === visible) return;
+    this.showBorder = visible;
+    if (!this.map) return;
+    const { width, height } = this.map;
+    const paddedWidth = width + 2 * MARGIN;
+    const ring = (x, y) => this.dirty.add((y + MARGIN) * paddedWidth + (x + MARGIN));
+    for (let x = -MARGIN; x < width + MARGIN; x += 1) {
+      ring(x, -1);
+      ring(x, height);
+    }
+    for (let y = 0; y < height; y += 1) {
+      ring(-1, y);
+      ring(width, y);
+    }
   }
 
   setGrid(grid) {
@@ -153,6 +210,32 @@ export class MapView {
   /** Drawn above units: [{ x, y, tint?, tile? }] — e.g. movement range tints and path arrows. */
   setOverlay(cells) {
     this.replaceLayer("overlay", cells);
+  }
+
+  /**
+   * Outlines the map's edge (white with a dark outer edge), drawn in the ocean ring just outside
+   * the map so it never covers tiles or units. Redrawn after every update.
+   */
+  drawBorder(ctx) {
+    const size = TILE * TEXTURE_SCALE;
+    const x = MARGIN * size;
+    const y = MARGIN * size;
+    const width = this.map.width * size;
+    const height = this.map.height * size;
+    const line = TEXTURE_SCALE; // one sheet pixel
+    const frame = (inset, thickness, color) => {
+      const left = x - inset - thickness;
+      const top = y - inset - thickness;
+      const outerWidth = width + 2 * (inset + thickness);
+      const outerHeight = height + 2 * (inset + thickness);
+      ctx.fillStyle = color;
+      ctx.fillRect(left, top, outerWidth, thickness);
+      ctx.fillRect(left, top + outerHeight - thickness, outerWidth, thickness);
+      ctx.fillRect(left, top, thickness, outerHeight);
+      ctx.fillRect(left + outerWidth - thickness, top, thickness, outerHeight);
+    };
+    frame(0, line, "rgba(255, 255, 255, 0.95)");
+    frame(line, line, "rgba(20, 50, 80, 0.45)");
   }
 
   /** Health bar along the bottom of a tile: green above 60%, yellow above 30%, red below. */
@@ -189,14 +272,14 @@ export class MapView {
     if (!this.map || !this.texture || (!this.dirtyAll && this.dirty.size === 0)) return;
     const ctx = this.texture.getContext();
     ctx.imageSmoothingEnabled = false;
-    const options = { scale: TEXTURE_SCALE, grid: this.grid };
+    const options = { scale: TEXTURE_SCALE, grid: this.grid, margin: MARGIN };
     const size = TILE * TEXTURE_SCALE;
     const drawLayers = (index) => {
-      const px = (index % this.map.width) * size;
-      const py = Math.floor(index / this.map.width) * size;
+      const px = ((index % this.map.width) + MARGIN) * size;
+      const py = (Math.floor(index / this.map.width) + MARGIN) * size;
       const unit = this.units?.get(index);
       if (unit?.dim) ctx.drawImage(this.dimmedSprite(unit.tile), px, py, size, size);
-      else if (unit) drawTile(ctx, this.sheet, unit.tile, px, py, size);
+      else if (unit?.tile !== undefined) drawTile(ctx, this.sheet, unit.tile, px, py, size); // health-only entries have no sprite
       // Half-size badges in a corner ("tl", "br", ...), e.g. the capture flag.
       for (const badge of unit?.badges ?? []) {
         const half = size / 2;
@@ -214,11 +297,15 @@ export class MapView {
       drawMap(ctx, this.sheet, this.map, options);
       for (const index of new Set([...(this.units?.keys() ?? []), ...(this.overlay?.keys() ?? [])])) drawLayers(index);
     } else {
-      for (const index of this.dirty) {
-        drawCell(ctx, this.sheet, this.map, index % this.map.width, Math.floor(index / this.map.width), options);
-        drawLayers(index);
+      const paddedWidth = this.map.width + 2 * MARGIN;
+      for (const key of this.dirty) {
+        const x = (key % paddedWidth) - MARGIN;
+        const y = Math.floor(key / paddedWidth) - MARGIN;
+        drawCell(ctx, this.sheet, this.map, x, y, options);
+        if (this.inside({ x, y })) drawLayers(y * this.map.width + x);
       }
     }
+    if (this.showBorder) this.drawBorder(ctx);
     this.dirty.clear();
     this.dirtyAll = false;
     this.texture.update();
@@ -246,6 +333,14 @@ export class MapView {
     this.camera.position.y = -height / 2;
     this.zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Math.max(height / 2, width / 2 / this.aspect()) * 1.08));
     this.updateOrtho();
+  }
+
+  /** Keeps the centre of the view over the map, so it can never be scrolled away. */
+  clampCamera() {
+    if (!this.map) return;
+    const { position } = this.camera;
+    position.x = Math.min(this.map.width, Math.max(0, position.x));
+    position.y = Math.min(0, Math.max(-this.map.height, position.y));
   }
 
   screenToWorld(clientX, clientY) {
@@ -310,6 +405,7 @@ export class MapView {
       const worldPerPixel = (2 * this.zoom) / this.canvas.getBoundingClientRect().height;
       this.camera.position.x -= (event.clientX - this.panFrom.x) * worldPerPixel;
       this.camera.position.y += (event.clientY - this.panFrom.y) * worldPerPixel;
+      this.clampCamera();
       this.panFrom = { x: event.clientX, y: event.clientY };
       return;
     }
@@ -343,6 +439,7 @@ export class MapView {
     const after = this.screenToWorld(event.clientX, event.clientY);
     this.camera.position.x += before.x - after.x;
     this.camera.position.y += before.y - after.y;
+    this.clampCamera();
   }
 
   /** Optional cell -> cells function; hover highlights every cell a paint would affect. */

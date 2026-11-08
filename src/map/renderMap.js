@@ -1,5 +1,5 @@
 // Draws map cells onto a 2D canvas context using the tile sheet.
-import { BRIDGE, GRASS, ROADS, SHEET_COLUMNS, SHEET_URL, TILE, WATER, objectTile } from "./tiles.js";
+import { BRIDGE, GRASS, MOUNTAIN, ROADS, SHEET_COLUMNS, SHEET_URL, TILE, WATER, objectTile } from "./tiles.js";
 
 function sheetXY(tile) {
   return [(tile % SHEET_COLUMNS) * TILE, Math.floor(tile / SHEET_COLUMNS) * TILE];
@@ -42,21 +42,31 @@ function waterQuarterTile(isWater, x, y, { dx, dy, corner, v, h }) {
   return WATER.center;
 }
 
-export function drawCell(ctx, sheet, map, x, y, { scale = 1, grid = false } = {}) {
+/**
+ * Draws one cell. Cells outside the map are open ocean: off-map counts as water everywhere, so
+ * land on the map's edge gets a beach drawn on the ocean tile next to it, just like a lake shore.
+ * `margin` (in tiles) shifts drawing right/down to leave room for that ring of ocean.
+ */
+export function drawCell(ctx, sheet, map, x, y, { scale = 1, grid = false, margin = 0 } = {}) {
   const size = TILE * scale;
-  const px = x * size;
-  const py = y * size;
+  const px = (x + margin) * size;
+  const py = (y + margin) * size;
   const index = y * map.width + x;
   const inside = (cx, cy) => cx >= 0 && cy >= 0 && cx < map.width && cy < map.height;
-  // Off-map counts as water so shorelines aren't drawn along the map border.
   const isWater = (cx, cy) => !inside(cx, cy) || map.terrain[cy * map.width + cx] === 1;
   const hasRoad = (cx, cy) => inside(cx, cy) && map.roads[cy * map.width + cx] === 1;
+
+  if (!inside(x, y)) {
+    QUARTERS.forEach((quarter, q) => drawQuarter(ctx, sheet, waterQuarterTile(isWater, x, y, quarter), q, px, py, size));
+    return;
+  }
 
   const water = map.terrain[index] === 1;
   if (water) {
     QUARTERS.forEach((quarter, q) => drawQuarter(ctx, sheet, waterQuarterTile(isWater, x, y, quarter), q, px, py, size));
   } else {
     drawTile(ctx, sheet, grassTile(x, y), px, py, size);
+    if (map.terrain[index] === 2) drawTile(ctx, sheet, MOUNTAIN, px, py, size);
   }
 
   if (map.roads[index]) {
@@ -76,9 +86,11 @@ export function drawCell(ctx, sheet, map, x, y, { scale = 1, grid = false } = {}
   }
 }
 
-export function drawMap(ctx, sheet, map, options) {
-  for (let y = 0; y < map.height; y += 1) {
-    for (let x = 0; x < map.width; x += 1) drawCell(ctx, sheet, map, x, y, options);
+/** Draws the whole map, plus `options.margin` rings of ocean around it. */
+export function drawMap(ctx, sheet, map, options = {}) {
+  const margin = options.margin ?? 0;
+  for (let y = -margin; y < map.height + margin; y += 1) {
+    for (let x = -margin; x < map.width + margin; x += 1) drawCell(ctx, sheet, map, x, y, options);
   }
 }
 

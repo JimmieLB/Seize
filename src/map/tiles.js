@@ -35,9 +35,14 @@ export const KIND_LABELS = {
   tower: "Comm tower",
   silo: "Silo",
   flag: "Flag",
+  blockade: "Blockade",
 };
 
+export const MOUNTAIN = 5; // rocky hill, drawn over grass
+export const BLOCKADE = 25; // barrier gate
+
 export function objectTile(kind, owner) {
+  if (kind === "blockade") return BLOCKADE;
   return OWNER_ROW[owner] + KIND_OFFSET[kind];
 }
 

@@ -152,7 +152,9 @@ button, input, select { font: inherit; color: inherit; }
 /* Game */
 .game-screen { position: fixed; inset: 0; }
 .game-canvas { display: block; width: 100%; height: 100%; outline: none; touch-action: none; }
-.game-leave { position: absolute; top: 16px; left: 16px; }
+.game-top-left { position: absolute; top: 16px; left: 16px; display: flex; align-items: center; gap: 8px; }
+.game-mute { padding: 6px 10px; font-size: 16px; line-height: 1; }
+.spectating-badge { padding: 6px 10px; border-radius: 6px; background: rgb(0 0 0 / 0.5); color: #fff; font-size: 14px; font-weight: 700; }
 
 /* Map editor */
 button:disabled { cursor: not-allowed; opacity: .55; filter: none; }
@@ -389,6 +391,38 @@ button:disabled { cursor: not-allowed; opacity: .55; filter: none; }
 .game-info .seat-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .game-info b { margin-left: 10px; font-variant-numeric: tabular-nums; }
 .game-info .seat-active { background: rgb(255 255 255 / 0.18); }
+.game-info .seat-defeated { opacity: .55; text-decoration: line-through; }
+
+/* Win / defeat screen */
+.game-result-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgb(0 0 0 / 0.45);
+  animation: result-fade .25s ease both;
+}
+.game-result {
+  width: min(380px, 100%);
+  align-items: center;
+  gap: 6px;
+  padding-top: 28px;
+  border-top: 8px solid var(--owner);
+  text-align: center;
+  animation: result-pop .35s cubic-bezier(.2, 1.4, .4, 1) both;
+}
+.game-result h2 { margin: 0; color: var(--owner); font-size: 44px; letter-spacing: -1px; }
+.game-result-kicker { margin: 0; color: var(--muted); font-size: 13px; font-weight: 700; text-transform: uppercase; }
+.game-result-detail { margin: 0 0 10px; color: #555; }
+.game-result .modal-actions { width: 100%; }
+.game-result-win h2 { text-shadow: 0 3px 0 rgb(0 0 0 / 0.12); }
+@keyframes result-fade { from { opacity: 0; } }
+@keyframes result-pop { from { opacity: 0; transform: scale(.85) translateY(10px); } }
+@media (prefers-reduced-motion: reduce) {
+  .game-result-backdrop, .game-result { animation: none; }
+}
 .game-info small { margin-left: 6px; color: #b8f5c4; font-size: 12px; font-variant-numeric: tabular-nums; }
 .shop-unit em { color: #2e9e45; font-style: normal; font-weight: 700; }
 
@@ -542,6 +576,20 @@ button:disabled { cursor: not-allowed; opacity: .55; filter: none; }
 .read-only .type-toggle button { cursor: default; }
 .read-only .type-toggle button:disabled { opacity: 1; }
 .no-traits { color: var(--muted); font-size: 12px; }
+
+/* Live games list */
+.live-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 7px;
+  border-radius: 50%;
+  background: var(--red);
+  vertical-align: 1px;
+  animation: live-pulse 1.4s ease-in-out infinite;
+}
+@keyframes live-pulse { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .live-dot { animation: none; } }
 
 /* Lobby secondary buttons */
 .btn-row { display: flex; gap: 10px; }

@@ -83,11 +83,14 @@ function App() {
   // A game id from the URL we still need to join (opened a link, refreshed, or pressed Back/Forward).
   const [pendingGameId, setPendingGameId] = useState(gameIdFromUrl);
   const [inviteId, setInviteId] = useState(null); // game from a link, waiting for a nickname
+  const [watchingId, setWatchingId] = useState(null); // live game being spectated
   const joinedRoomId = joinedRoom?.id;
   const joinedRef = useRef(null); // latest joined room id, readable from async callbacks
   joinedRef.current = joinedRoomId ?? null;
   const loadErrorRef = useRef(null); // error message from the last failed room-list refresh
   const openRooms = rooms.filter((room) => !room.isFull && room.status !== "playing");
+  const liveRooms = rooms.filter((room) => room.status === "playing");
+  const watchingRoom = watchingId && !joinedRoom ? rooms.find((room) => room.id === watchingId) ?? null : null;
 
   const loadRooms = useCallback(async () => {
     const startedIn = joinedRef.current;
@@ -111,10 +114,17 @@ function App() {
 
   useEffect(() => {
     loadRooms();
-    // Poll faster inside a room so map picks and game start show up quickly.
-    const intervalId = window.setInterval(loadRooms, joinedRoomId ? 2000 : 5000);
+    // Poll faster inside a room (or while watching) so changes show up quickly.
+    const intervalId = window.setInterval(loadRooms, joinedRoomId || watchingId ? 2000 : 5000);
     return () => window.clearInterval(intervalId);
-  }, [loadRooms, joinedRoomId]);
+  }, [loadRooms, joinedRoomId, watchingId]);
+
+  // Stop spectating if the game's room closes.
+  useEffect(() => {
+    if (!watchingId || loading || rooms.some((room) => room.id === watchingId)) return;
+    setWatchingId(null);
+    setError("That game has ended.");
+  }, [rooms, watchingId, loading]);
 
   useEffect(() => {
     if (!joinedRoomId) return undefined;
@@ -128,18 +138,20 @@ function App() {
     return () => window.clearInterval(intervalId);
   }, [joinedRoomId]);
 
-  // Keep the address bar in sync: /<game_id> while in a game, / otherwise.
+  // Keep the address bar in sync: /<game_id> while in (or watching) a game, / otherwise.
   useEffect(() => {
-    if (joinedRoomId) setUrl(`/${joinedRoomId}`);
+    const gameId = joinedRoomId ?? watchingId;
+    if (gameId) setUrl(`/${gameId}`);
     else if (!pendingGameId && !inviteId && gameIdFromUrl()) setUrl("/", { replace: true });
-  }, [joinedRoomId, pendingGameId, inviteId]);
+  }, [joinedRoomId, watchingId, pendingGameId, inviteId]);
 
   // Browser Back/Forward: leave the game or go to the game in the URL.
   useEffect(() => {
     const handlePopState = () => {
       const gameId = gameIdFromUrl();
-      if (gameId === joinedRoomId) return;
+      if (gameId === (joinedRoomId ?? watchingId)) return;
       if (joinedRoomId) leaveRoom({ keepUrl: true });
+      setWatchingId(null);
       setPendingGameId(gameId);
     };
     window.addEventListener("popstate", handlePopState);
@@ -206,6 +218,7 @@ function App() {
     }
   }
 
+  /** Joins a room. For a game that's already running, rejoins if you have a seat, else watches it. */
   async function joinRoom(room, password = "") {
     try {
       const { room: joined } = await api(`/api/rooms/${room.id}/join`, {
@@ -216,20 +229,43 @@ function App() {
           password,
         }),
       });
+      setWatchingId(null);
       setJoinedRoom(joined);
       setRooms((current) => current.map((item) => (item.id === joined.id ? joined : item)));
       setDialog(null);
       setError("");
     } catch (requestError) {
+      if (room.status === "playing") {
+        watchRoom(room);
+        return;
+      }
       setError(requestError.message);
     }
   }
 
   function handleJoinClick(room) {
+    if (room.status === "playing") {
+      // Rejoin if we're one of its players (no nickname needed for that), otherwise spectate.
+      if (playerName.trim()) joinRoom(room);
+      else watchRoom(room);
+      return;
+    }
     if (!requireName()) return;
     setError("");
     if (room.hasPassword) setDialog({ type: "join", room });
     else joinRoom(room);
+  }
+
+  function watchRoom(room) {
+    setDialog(null);
+    setError("");
+    setInviteId(null);
+    setWatchingId(room.id);
+  }
+
+  function stopWatching() {
+    setUrl("/");
+    setWatchingId(null);
   }
 
   function submitDialog(event) {
@@ -264,7 +300,7 @@ function App() {
       setError("That game doesn't exist or has closed.");
       return;
     }
-    if (!playerName.trim()) {
+    if (!playerName.trim() && room.status !== "playing") {
       setInviteId(room.id);
       return;
     }
@@ -284,6 +320,14 @@ function App() {
     );
   }
 
+  if (watchingRoom) {
+    return (
+      <Suspense fallback={<div className="lobby">Loading...</div>}>
+        <GameScreen key={watchingRoom.id} room={watchingRoom} playerId={getPlayerId()} onLeave={stopWatching} spectator />
+      </Suspense>
+    );
+  }
+
   if (!joinedRoom && screen === "units") {
     return (
       <Suspense fallback={<div className="lobby">Loading...</div>}>
@@ -298,7 +342,7 @@ function App() {
         {joinedRoom ? (
           <GameScreen room={joinedRoom} playerId={getPlayerId()} onLeave={leaveRoom} />
         ) : (
-          <MapEditor onExit={() => setScreen("lobby")} readOnly={!isAdmin} />
+          <MapEditor onExit={() => setScreen("lobby")} isAdmin={isAdmin} />
         )}
       </Suspense>
     );
@@ -337,9 +381,7 @@ function App() {
         )}
         <button className="btn btn-green btn-wide" onClick={openCreate}>Create room</button>
         <div className="btn-row">
-          <button className="btn btn-blue" onClick={() => { setError(""); setScreen("editor"); }}>
-            {isAdmin ? "Map editor" : "Maps"}
-          </button>
+          <button className="btn btn-blue" onClick={() => { setError(""); setScreen("editor"); }}>Map editor</button>
           <button className="btn btn-blue" onClick={() => { setError(""); setScreen("units"); }}>Units</button>
         </div>
 
@@ -369,6 +411,28 @@ function App() {
             ))
           )}
         </div>
+
+        {liveRooms.length > 0 && (
+          <>
+            <div className="rooms-header">
+              <span>Live games</span>
+              <span>{liveRooms.length} playing</span>
+            </div>
+            <div className="room-list">
+              {liveRooms.map((room) => (
+                <div className="room-row" key={room.id}>
+                  <span className="room-name">
+                    <span className="live-dot" aria-hidden="true" />
+                    {room.name}
+                  </span>
+                  <span className="room-map">{room.map?.name ?? ""}</span>
+                  <span className="room-count">{room.playerCount} playing</span>
+                  <button className="btn btn-gray btn-small" onClick={() => handleJoinClick(room)}>Watch</button>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
       </section>
 
       <div className="admin-status">

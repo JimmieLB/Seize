@@ -90,7 +90,7 @@ Bonuses follow ownership, so capturing or losing these buildings changes them im
 
 ## Admin
 
-Editing maps, units and buildings requires the admin password. Use **Admin login** under the lobby panel; the login lasts 30 days on that browser (Log out removes it). Everyone else can still open the **Maps** viewer and the **Units** page, but only to look. The server enforces this: changes without a valid admin token are refused, and repeated wrong passwords are blocked for 10 minutes.
+Editing units and buildings, and changing or deleting published maps, requires the admin password. Use **Admin login** under the lobby panel; the login lasts 30 days on that browser (Log out removes it). Anyone can open the map editor and **publish** a new map (limited to 20 per hour per address), but once published it is view-only for non-admins. Everyone can still view the Units page. The server enforces all of this: changes without a valid admin token are refused, and repeated wrong passwords are blocked for 10 minutes.
 
 The password comes from the `ADMIN_PASSWORD` environment variable; if it isn't set, the default in `server/admin.js` is used. Changing the password logs every admin out.
 
@@ -108,3 +108,31 @@ The password comes from the `ADMIN_PASSWORD` environment variable; if it isn't s
 On first start with an empty volume, maps, units and buildings are seeded from `server/seed/` (a copy of the local data at the time). After that the volume is the source of truth; update `server/seed/` only if you want new deployments to start from different data.
 
 Environment variables: `PORT`, `ADMIN_PASSWORD`, `SEIZE_DATA_DIR` (overrides the data location), and for local development `SEIZE_API_URL` (where Vite proxies `/api`).
+
+## Winning
+
+Capturing a player's HQ defeats them: their units are removed, their buildings and flags go to the capturer, and their turns are skipped (they can keep watching). When only one player is left, everyone sees the result screen — **Victory!** for the winner, "<name> wins!" for the others — and the game is over; no further actions are accepted. "Back to lobby" leaves the room.
+
+## Ocean around the map
+
+Every map sits in an endless ocean: a huge water plane is drawn behind it, and the map texture includes a one-tile ring of ocean so land on the map's edge gets a proper shoreline and edge water flows straight into the sea. The ocean is only scenery — nothing can enter it (units can't move off the map and the editor ignores clicks outside it), and the camera's centre is kept over the map so the view can't be scrolled away. Map thumbnails are unaffected.
+
+## Mountains, blockades and the map border
+
+- **Mountains** (Terrain → Mountain in the editor): infantry and mech (land units with Captures) can climb them for 2 movement; other land units and ships can't enter; air units fly over for 1. Roads, buildings, flags and blockades can't be placed on mountains.
+- **Blockades** (Terrain → Blockade): obstacles that can sit on open land or on roads. Land and sea units can't move through or onto them; air units can fly over but not stop on them. Any unit that can attack can target one in range (it shows as a red target). Blockades have 10 health (`BLOCKADE_HP` in `shared/gameRules.js`), no defense, never hit back, and show a health bar once damaged; at 0 they're removed and the path opens for everyone.
+- **Border:** the edge of the map is outlined (white with a dark edge, just outside the map) — always in the editor, and in a game only while you're dragging a unit to choose where it goes.
+
+Attacks now target a tile (`POST /api/rooms/:id/attack` with `{ unitId, x, y }`), which can hold an enemy unit or a blockade.
+
+## Sounds
+
+Sound files live in `public/sounds/`: `notif.wav` plays when the turn passes to you, `notif2.wav` when it passes to anyone else, and `explode.wav` whenever a unit is destroyed (including units removed when a player is defeated). Nothing plays on first load. The 🔊 button next to Leave/Stop watching mutes sounds; the setting is remembered per browser. See `src/sounds.js`.
+
+## Spectating
+
+Games in progress are listed under **Live games** in the lobby with a **Watch** button, and opening a link to a running game you're not part of (with or without a nickname) also watches it. Spectators see the game update live (and hear its sounds) but can't click anything, don't take a player slot, and don't keep a room open — when the players leave and the room closes, spectators are sent back to the lobby. If you click Watch on a game you have a seat in, you rejoin as that player instead; returning players also no longer need the room password.
+
+## Checking ranges
+
+In a game (as a player or a spectator), click any unit — yours or an enemy's — to tint every tile it could move to on its turn **blue**. Double-click a ranged unit (Ranged trait) to tint its attack range (2–3 tiles away) **orange** instead. Click empty ground to clear it. Clicking your own unit on your turn still opens its action panel as before (and pressing and dragging still moves it).

@@ -18,12 +18,14 @@ import {
 } from "./map/mapModel.js";
 import { loadSheet } from "./map/renderMap.js";
 import TileIcon from "./map/TileIcon.jsx";
-import { KIND_LABELS, SHEET_URL, objectTile } from "./map/tiles.js";
+import { BLOCKADE, KIND_LABELS, MOUNTAIN, SHEET_URL, objectTile } from "./map/tiles.js";
 
 const TERRAIN_TOOLS = [
   { id: "land", label: "Land", tile: 0 },
   { id: "water", label: "Water", tile: 37 },
+  { id: "mountain", label: "Mountain", tile: MOUNTAIN },
   { id: "road", label: "Road", tile: 110 },
+  { id: "blockade", label: "Blockade", tile: BLOCKADE },
   { id: "erase", label: "Erase", tile: null },
 ];
 const OBJECT_TOOLS = [...BUILDING_KINDS, "flag"];
@@ -42,10 +44,12 @@ function isTyping() {
   return ["INPUT", "SELECT", "TEXTAREA"].includes(document.activeElement?.tagName);
 }
 
-/** `readOnly`: non-admins can open and look at maps but not edit, save or delete them. */
-function MapEditor({ onExit, readOnly = false }) {
-  const readOnlyRef = useRef(readOnly);
-  readOnlyRef.current = readOnly;
+/**
+ * Anyone can create and publish a new map. Published maps can only be changed (or deleted) by
+ * admins; for everyone else, opening one is view-only.
+ */
+function MapEditor({ onExit, isAdmin = false }) {
+  const readOnlyRef = useRef(false);
   const canvasRef = useRef(null);
   const viewRef = useRef(null);
   const mapRef = useRef(createMap());
@@ -62,6 +66,8 @@ function MapEditor({ onExit, readOnly = false }) {
   const [summary, setSummary] = useState(() => summarize(mapRef.current));
   const [grid, setGrid] = useState(true);
   const [mapId, setMapId] = useState(null);
+  const readOnly = !isAdmin && Boolean(mapId); // a published map, and we're not an admin
+  readOnlyRef.current = readOnly;
   const [unsaved, setUnsaved] = useState(false);
   const [status, setStatus] = useState(null);
   const [undoCount, setUndoCount] = useState(0);
@@ -226,6 +232,7 @@ function MapEditor({ onExit, readOnly = false }) {
       setStatus({ text: "Give the map a name first.", error: true });
       return;
     }
+    if (!isAdmin && !window.confirm("Publish this map? Once it's published, only admins can change or delete it.")) return;
     setSaving(true);
     try {
       const body = JSON.stringify(toSaved(mapRef.current));
@@ -234,7 +241,7 @@ function MapEditor({ onExit, readOnly = false }) {
         : await api("/api/maps", { method: "POST", body });
       setMapId(map.id);
       setUnsaved(false);
-      setStatus({ text: "Map saved." });
+      setStatus({ text: isAdmin ? "Map saved." : "Map published." });
     } catch (error) {
       setStatus({ text: error.message, error: true });
     } finally {
@@ -242,10 +249,12 @@ function MapEditor({ onExit, readOnly = false }) {
     }
   }
 
-  // Viewers start by picking a map to look at.
+  // Published maps are view-only for non-admins: left-drag pans instead of painting.
   useEffect(() => {
-    if (readOnly) showOpenDialog();
-  }, []);
+    if (!viewRef.current) return;
+    viewRef.current.panWithLeftButton = readOnly;
+    viewRef.current.updateCursor();
+  }, [readOnly]);
 
   async function showOpenDialog() {
     setSavedMaps("loading");
@@ -306,8 +315,9 @@ function MapEditor({ onExit, readOnly = false }) {
           <>
             <h1 className="editor-title">{mapId ? meta.name : "Maps"}</h1>
             {mapId && <span className="editor-hint">{meta.width} × {meta.height} · {meta.players} players</span>}
-            <span className="view-only">View only — log in as admin to edit</span>
+            <span className="view-only">Published — only admins can change it</span>
             <div className="editor-actions">
+              <button className="btn btn-gray btn-small" onClick={newMap}>New</button>
               <button className="btn btn-blue btn-small" onClick={showOpenDialog}>Open</button>
             </div>
           </>
@@ -373,7 +383,7 @@ function MapEditor({ onExit, readOnly = false }) {
               <button className="btn btn-gray btn-small" onClick={newMap}>New</button>
               <button className="btn btn-blue btn-small" onClick={showOpenDialog}>Open</button>
               <button className="btn btn-green btn-small" onClick={saveMap} disabled={saving}>
-                {saving ? "Saving..." : unsaved || !mapId ? "Save" : "Saved"}
+                {saving ? "Saving..." : !isAdmin ? "Publish" : unsaved || !mapId ? "Save" : "Saved"}
               </button>
             </div>
           </>
@@ -486,7 +496,7 @@ function MapEditor({ onExit, readOnly = false }) {
                     <span className="room-name">{saved.name}</span>
                     <span className="room-count">{saved.width}×{saved.height} · {saved.players}P</span>
                     <button className="btn btn-blue btn-small" onClick={() => openMap(saved.id)}>Open</button>
-                    {!readOnly && (
+                    {isAdmin && (
                       <button className="btn btn-red btn-small" onClick={() => deleteMap(saved)} aria-label={`Delete ${saved.name}`}>✕</button>
                     )}
                   </div>

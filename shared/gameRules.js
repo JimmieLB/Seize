@@ -6,7 +6,9 @@
 //   turn: 1,                 // increases each time play returns to the first seat
 //   active: 0,               // index into seats of the player whose turn it is
 //   income: { kind: cash per day } | null,      // building income, copied from the Buildings tab at start
-//   seats: [{ playerId, name, owner, funds }],   // owner = map colour slot (1-4)
+//   seats: [{ playerId, name, owner, funds, defeated }],   // owner = map colour slot (1-4); defeated = lost their HQ
+//   winner: owner number of the last player standing (game over), if any
+//   blockades: [{ x, y, hp }],   // obstacles from the map; removed when their hp reaches 0
 //   properties: [{ x, y, kind, owner, capture }], // buildings + flags; owner changes when captured
 //                                                 // capture: null | { unitId, progress (0-100) }
 //   units: [{ id, unitId, owner, x, y, hp, moved, acted, carriedBy }],
@@ -86,7 +88,24 @@ export function incomeFor(game, owner) {
 }
 
 export function initialProperties(map) {
-  return map.objects.map(({ x, y, kind, owner }) => ({ x, y, kind, owner, capture: null }));
+  return map.objects
+    .filter((object) => object.kind !== "blockade")
+    .map(({ x, y, kind, owner }) => ({ x, y, kind, owner, capture: null }));
+}
+
+// ---- Blockades ----
+// Placed in the map editor. Land and sea units can't move through or onto them; air units can fly
+// over but not stop on them. Any unit that can attack can hit one in range: they have
+// BLOCKADE_HP health, no defense and never hit back. At 0 health they're removed.
+export const BLOCKADE_HP = 10;
+export const BLOCKADE_DEF = { id: "blockade", name: "Blockade", type: "structure", attack: 0, defense: 0, traits: [] };
+
+export function initialBlockades(map) {
+  return map.objects.filter((object) => object.kind === "blockade").map(({ x, y }) => ({ x, y, hp: BLOCKADE_HP }));
+}
+
+export function blockadeAt(game, x, y) {
+  return game.blockades?.find((blockade) => blockade.x === x && blockade.y === y) ?? null;
 }
 
 /** `income` is a { kind: cash per day } table (from the Buildings tab), copied into the game. */
@@ -98,6 +117,7 @@ export function createGame(map, players, income = null) {
     income,
     seats,
     properties: initialProperties(map),
+    blockades: initialBlockades(map),
     units: [],
     nextUnitId: 1,
     lastAction: null,
@@ -109,6 +129,7 @@ export function createGame(map, players, income = null) {
 
 /** Common checks for acting with one of your units; returns [error, unit, def]. */
 function ownUnit(game, unitDefs, seatIndex, unitId) {
+  if (game.winner) return ["The game is over."];
   if (seatIndex !== game.active) return ["It's not your turn."];
   const unit = game.units.find((current) => current.id === unitId);
   if (!unit || unit.owner !== game.seats[seatIndex].owner) return ["That isn't your unit."];
@@ -130,6 +151,7 @@ function removeUnit(game, unit) {
 
 /** Returns why a purchase isn't allowed, or null if it is. */
 export function buyError(game, unitDefs, seatIndex, x, y, unitId) {
+  if (game.winner) return "The game is over.";
   if (seatIndex !== game.active) return "It's not your turn.";
   const seat = game.seats[seatIndex];
   const building = buildingAt(game, x, y);
@@ -164,7 +186,8 @@ export function endTurn(game, isConnected = () => true, unitDefs = []) {
   for (let step = 0; step < game.seats.length; step += 1) {
     next = (next + 1) % game.seats.length;
     if (next === 0) game.turn += 1;
-    if (isConnected(game.seats[next].playerId)) break;
+    const seat = game.seats[next];
+    if (!seat.defeated && isConnected(seat.playerId)) break; // skip defeated players and players who left
   }
   game.active = next;
   const { owner } = game.seats[next];
@@ -230,7 +253,9 @@ export function canBoard(game, unitDefs, transport, unit) {
 // Costs per tile entered:
 //   air:  everything 1
 //   sea:  open water and ports 1, everything else impassable (bridges block ships)
-//   land: open water impassable; roads, bridges and buildings 1; grass 1 (2 with the Treads trait)
+//   land: open water impassable; roads, bridges and buildings 1; grass 1 (2 with the Treads trait);
+//         mountains 2 for infantry/mech (Captures trait), impassable for other land units
+//   mountains: air 1, sea impassable
 // Units can pass through friendly units but not enemies, and can't stop on any other unit.
 
 const DIRECTIONS = [[0, -1], [1, 0], [0, 1], [-1, 0]];
@@ -252,8 +277,10 @@ export function moveCost(map, def, x, y) {
   const water = map.terrain[index] === "1";
   const road = map.roads[index] === "1";
   const building = buildingGrid(map)[index];
+  const mountain = map.terrain[index] === "2";
   if (def.type === "air") return 1;
   if (def.type === "sea") return (water && !road) || building === "port" ? 1 : Infinity;
+  if (mountain) return def.traits?.includes("captures") ? 2 : Infinity;
   if (water && !road) return Infinity;
   if (road || building) return 1;
   return def.traits?.includes("treads") ? 2 : 1;
@@ -303,6 +330,7 @@ export function reachable(game, map, def, unit, unitDefs = null) {
       if (next > speed) continue;
       const other = unitAt(game, nx, ny);
       if (other && other.owner !== unit.owner) continue;
+      if (def.type !== "air" && blockadeAt(game, nx, ny)) continue;
       const nextIndex = ny * map.width + nx;
       if (!best.has(nextIndex) || next < best.get(nextIndex).cost) {
         best.set(nextIndex, { cost: next, prev: index });
@@ -349,9 +377,11 @@ export function moveError(game, map, unitDefs, seatIndex, unitId, path) {
     if (moveCost(map, def, step.x, step.y) === Infinity && !boarding) return `${def.name} can't move there.`;
     const other = unitAt(game, step.x, step.y);
     if (other && other.owner !== unit.owner) return "Enemy units block the way.";
+    if (def.type !== "air" && blockadeAt(game, step.x, step.y)) return "A blockade is in the way.";
   }
   if (pathCost(map, def, path, game, unitDefs, unit) > unitSpeed(def, unit)) return "That's too far.";
   const end = path[path.length - 1];
+  if (blockadeAt(game, end.x, end.y)) return "Units can't stop on a blockade.";
   const occupant = unitAt(game, end.x, end.y);
   if (occupant && occupant !== unit && !canBoard(game, unitDefs, occupant, unit)) {
     return "Units can't stop on another unit.";
@@ -385,7 +415,7 @@ export function applyMove(game, unitId, path) {
 export function dropTiles(game, map, unitDefs, transport, cargo) {
   const cargoDef = defOf(unitDefs, cargo);
   return DIRECTIONS.map(([dx, dy]) => ({ x: transport.x + dx, y: transport.y + dy })).filter(
-    (tile) => moveCost(map, cargoDef, tile.x, tile.y) !== Infinity && !unitAt(game, tile.x, tile.y),
+    (tile) => moveCost(map, cargoDef, tile.x, tile.y) !== Infinity && !unitAt(game, tile.x, tile.y) && !blockadeAt(game, tile.x, tile.y),
   );
 }
 
@@ -443,14 +473,23 @@ function canCounter(attacker, defender, defenderDef) {
   return defenderDef.attack > 0 && !defenderDef.traits?.includes("ranged") && distance(attacker, defender) === 1;
 }
 
-/** Returns why `unitId` can't attack `targetId`, or null if it can. */
-export function attackError(game, unitDefs, seatIndex, unitId, targetId) {
+/** What `unit` could hit on (x, y): { kind: "unit", unit } | { kind: "blockade", blockade } | null. */
+function targetAt(game, unit, x, y) {
+  const other = unitAt(game, x, y);
+  if (other && other.owner !== unit.owner) return { kind: "unit", unit: other, x, y };
+  const blockade = blockadeAt(game, x, y);
+  if (blockade) return { kind: "blockade", blockade, x, y };
+  return null;
+}
+
+/** Returns why `unitId` can't attack the tile (x, y), or null if it can. */
+export function attackError(game, unitDefs, seatIndex, unitId, x, y) {
   const [error, unit, def] = ownUnit(game, unitDefs, seatIndex, unitId);
   if (error) return error;
   if (unit.acted) return "That unit has already acted this turn.";
   if (def.attack <= 0) return `${def.name} can't attack.`;
-  const target = game.units.find((current) => current.id === targetId);
-  if (!target || target.owner === unit.owner || target.carriedBy) return "Pick an enemy unit to attack.";
+  const target = Number.isInteger(x) && Number.isInteger(y) ? targetAt(game, unit, x, y) : null;
+  if (!target) return "Pick an enemy unit or a blockade to attack.";
   const range = attackRange(def);
   if (range.min > 1 && unit.moved) return "Ranged units can't move and attack in the same turn.";
   const gap = distance(unit, target);
@@ -458,46 +497,74 @@ export function attackError(game, unitDefs, seatIndex, unitId, targetId) {
   return null;
 }
 
-/** Enemy units this unit could attack right now. */
+/** Tiles this unit could attack right now: [{ x, y, kind, unit? , blockade? }]. */
 export function attackTargets(game, unitDefs, seatIndex, unit) {
-  return game.units.filter((target) => target.owner !== unit.owner && !attackError(game, unitDefs, seatIndex, unit.id, target.id));
+  const candidates = [
+    ...game.units.filter((other) => other.owner !== unit.owner && !other.carriedBy),
+    ...(game.blockades ?? []),
+  ];
+  return candidates
+    .filter((target) => !attackError(game, unitDefs, seatIndex, unit.id, target.x, target.y))
+    .map((target) => targetAt(game, unit, target.x, target.y));
 }
 
-/** Predicted damage both ways, for UI previews. */
-export function previewAttack(game, unitDefs, unit, target) {
+/** Predicted damage both ways for attacking (x, y), for UI previews. */
+export function previewAttack(game, unitDefs, unit, x, y) {
+  const target = targetAt(game, unit, x, y);
   const attackerDef = defOf(unitDefs, unit);
-  const targetDef = defOf(unitDefs, target);
-  const dealt = damage(attackerDef, hpOf(unit), targetDef, attackBonus(game, attackerDef, unit.owner));
-  const remaining = hpOf(target) - dealt;
-  const counter = remaining > 0 && canCounter(unit, target, targetDef)
-    ? damage(targetDef, remaining, attackerDef, attackBonus(game, targetDef, target.owner))
+  const bonus = attackBonus(game, attackerDef, unit.owner);
+  if (target.kind === "blockade") {
+    return { dealt: Math.min(damage(attackerDef, hpOf(unit), BLOCKADE_DEF, bonus), target.blockade.hp), counter: 0 };
+  }
+  const targetDef = defOf(unitDefs, target.unit);
+  const dealt = damage(attackerDef, hpOf(unit), targetDef, bonus);
+  const remaining = hpOf(target.unit) - dealt;
+  const counter = remaining > 0 && canCounter(unit, target.unit, targetDef)
+    ? damage(targetDef, remaining, attackerDef, attackBonus(game, targetDef, target.unit.owner))
     : 0;
-  return { dealt: Math.min(dealt, hpOf(target)), counter: Math.min(counter, hpOf(unit)) };
+  return { dealt: Math.min(dealt, hpOf(target.unit)), counter: Math.min(counter, hpOf(unit)) };
 }
 
-export function applyAttack(game, unitDefs, unitId, targetId) {
+export function applyAttack(game, unitDefs, unitId, x, y) {
   const attacker = game.units.find((current) => current.id === unitId);
-  const target = game.units.find((current) => current.id === targetId);
   const attackerDef = defOf(unitDefs, attacker);
-  const targetDef = defOf(unitDefs, target);
-  const dealt = Math.min(damage(attackerDef, hpOf(attacker), targetDef, attackBonus(game, attackerDef, attacker.owner)), hpOf(target));
-  target.hp = hpOf(target) - dealt;
-  const parts = [`${seatName(game, attacker.owner)}'s ${attackerDef.name} hit ${seatName(game, target.owner)}'s ${targetDef.name} for ${dealt}%`];
-  if (target.hp <= 0) {
-    removeUnit(game, target);
-    parts.push(`destroying it`);
-  } else if (canCounter(attacker, target, targetDef)) {
-    const counter = Math.min(damage(targetDef, target.hp, attackerDef, attackBonus(game, targetDef, target.owner)), hpOf(attacker));
-    attacker.hp = hpOf(attacker) - counter;
-    parts.push(`and took ${counter}% back`);
-    if (attacker.hp <= 0) {
-      removeUnit(game, attacker);
-      parts.push(`(destroyed)`);
+  const bonus = attackBonus(game, attackerDef, attacker.owner);
+  const target = targetAt(game, attacker, x, y);
+  const who = `${seatName(game, attacker.owner)}'s ${attackerDef.name}`;
+  let text;
+  if (target.kind === "blockade") {
+    const { blockade } = target;
+    const dealt = Math.min(damage(attackerDef, hpOf(attacker), BLOCKADE_DEF, bonus), blockade.hp);
+    blockade.hp -= dealt;
+    if (blockade.hp <= 0) {
+      game.blockades = game.blockades.filter((current) => current !== blockade);
+      text = `${who} broke a blockade.`;
+    } else {
+      text = `${who} hit a blockade for ${dealt} (${blockade.hp}/${BLOCKADE_HP} left).`;
     }
+  } else {
+    const defender = target.unit;
+    const targetDef = defOf(unitDefs, defender);
+    const dealt = Math.min(damage(attackerDef, hpOf(attacker), targetDef, bonus), hpOf(defender));
+    defender.hp = hpOf(defender) - dealt;
+    const parts = [`${who} hit ${seatName(game, defender.owner)}'s ${targetDef.name} for ${dealt}%`];
+    if (defender.hp <= 0) {
+      removeUnit(game, defender);
+      parts.push(`destroying it`);
+    } else if (canCounter(attacker, defender, targetDef)) {
+      const counter = Math.min(damage(targetDef, defender.hp, attackerDef, attackBonus(game, targetDef, defender.owner)), hpOf(attacker));
+      attacker.hp = hpOf(attacker) - counter;
+      parts.push(`and took ${counter}% back`);
+      if (attacker.hp <= 0) {
+        removeUnit(game, attacker);
+        parts.push(`(destroyed)`);
+      }
+    }
+    text = `${parts.join(" ")}.`;
   }
   attacker.acted = true;
   game.version += 1;
-  game.lastAction = { version: game.version, text: `${parts.join(" ")}.` };
+  game.lastAction = { version: game.version, text };
 }
 
 // ---- Capturing ----
@@ -526,6 +593,29 @@ export function captureProgress(game, unit) {
   return capture?.unitId === unit.id ? capture.progress : 0;
 }
 
+// ---- Defeat and victory ----
+// Losing your HQ defeats you: your units are removed, your buildings and flags go to whoever
+// captured it, and your turns are skipped. When only one player is left, they win
+// (game.winner = their owner number) and the game is over.
+
+function defeat(game, loser, conqueror) {
+  const seat = game.seats.find((current) => current.owner === loser);
+  if (seat) seat.defeated = true;
+  for (const unit of game.units.filter((current) => current.owner === loser)) removeUnit(game, unit);
+  for (const property of game.properties) {
+    if (property.owner === loser) {
+      property.owner = conqueror;
+      property.capture = null;
+    }
+  }
+  const remaining = game.seats.filter((current) => !current.defeated);
+  if (remaining.length === 1) game.winner = remaining[0].owner;
+}
+
+export function isGameOver(game) {
+  return Boolean(game.winner);
+}
+
 export function applyCapture(game, unitDefs, unitId) {
   const unit = game.units.find((current) => current.id === unitId);
   const property = propertyAt(game, unit.x, unit.y);
@@ -533,9 +623,17 @@ export function applyCapture(game, unitDefs, unitId) {
   const label = property.kind === "hq" ? "HQ" : property.kind;
   const who = seatName(game, unit.owner);
   if (progress >= CAPTURE_TARGET) {
+    const previousOwner = property.owner;
     property.owner = unit.owner;
     property.capture = null;
     game.lastAction = { text: `${who} captured a ${label}!` };
+    if (property.kind === "hq" && previousOwner > 0) {
+      const loser = seatName(game, previousOwner);
+      defeat(game, previousOwner, unit.owner);
+      game.lastAction.text = game.winner
+        ? `${who} captured ${loser}'s HQ and wins the game!`
+        : `${who} captured ${loser}'s HQ! ${loser} is defeated.`;
+    }
   } else {
     property.capture = { unitId: unit.id, progress };
     game.lastAction = { text: `${who} is capturing a ${label} (${progress}%).` };
@@ -563,6 +661,7 @@ export function applyWait(game, unitId) {
 /** Fills in fields added after a game was saved (older rooms.json data). */
 export function upgradeGame(game, map) {
   game.properties ??= initialProperties(map);
+  game.blockades ??= initialBlockades(map);
   game.lastAction ??= null;
   for (const unit of game.units) {
     unit.hp ??= MAX_HP;
