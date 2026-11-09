@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { BUILDING_KINDS, MAP_LIMITS } from "../shared/mapFormat.js";
+import { BUILDING_KINDS, MAP_LIMITS, validateMap } from "../shared/mapFormat.js";
 import { api } from "./api.js";
 import { MapView } from "./map/MapView.js";
 import {
@@ -73,6 +73,8 @@ function MapEditor({ onExit, isAdmin = false }) {
   const [undoCount, setUndoCount] = useState(0);
   const [hover, setHover] = useState(null);
   const [savedMaps, setSavedMaps] = useState(null);
+  // Copy/paste a map as JSON: { mode: "export", text } | { mode: "import", text, error }
+  const [mapJson, setMapJson] = useState(null);
   const [saving, setSaving] = useState(false);
   const [symmetryOn, setSymmetryOn] = useState(false);
   const [axis, setAxis] = useState("vertical");
@@ -218,6 +220,39 @@ function MapEditor({ onExit, isAdmin = false }) {
     setUnsaved(true);
   }
 
+  /** The current map as one line of JSON (the same format the server stores). */
+  function showExport() {
+    setMapJson({ mode: "export", text: JSON.stringify(toSaved(mapRef.current)) });
+  }
+
+  async function copyExport() {
+    try {
+      await navigator.clipboard.writeText(mapJson.text);
+      setStatus({ text: "Map JSON copied." });
+    } catch {
+      setStatus({ text: "Couldn't copy automatically — select the text and copy it.", error: true });
+    }
+  }
+
+  /** Loads pasted JSON as a new, unsaved map (never overwrites a published one). */
+  function importMap() {
+    let saved;
+    try {
+      saved = validateMap(JSON.parse(mapJson.text));
+    } catch (error) {
+      const message = error instanceof SyntaxError ? "That isn't valid JSON." : error.message;
+      setMapJson((current) => ({ ...current, error: message }));
+      return;
+    }
+    if (!confirmDiscard()) return;
+    clearUndo();
+    setMapId(null);
+    replaceMap(fromSaved(saved), { fit: true });
+    setUnsaved(true);
+    setMapJson(null);
+    setStatus({ text: `Imported "${saved.name}". ${isAdmin ? "Save" : "Publish"} it to add it to the map list.` });
+  }
+
   function newMap() {
     if (!confirmDiscard()) return;
     clearUndo();
@@ -318,6 +353,8 @@ function MapEditor({ onExit, isAdmin = false }) {
             <span className="view-only">Published — only admins can change it</span>
             <div className="editor-actions">
               <button className="btn btn-gray btn-small" onClick={newMap}>New</button>
+              <button className="btn btn-gray btn-small" onClick={() => setMapJson({ mode: "import", text: "" })}>Import</button>
+              <button className="btn btn-gray btn-small" onClick={showExport}>Export</button>
               <button className="btn btn-blue btn-small" onClick={showOpenDialog}>Open</button>
             </div>
           </>
@@ -381,6 +418,8 @@ function MapEditor({ onExit, isAdmin = false }) {
             </div>
             <div className="editor-actions">
               <button className="btn btn-gray btn-small" onClick={newMap}>New</button>
+              <button className="btn btn-gray btn-small" onClick={() => setMapJson({ mode: "import", text: "" })}>Import</button>
+              <button className="btn btn-gray btn-small" onClick={showExport}>Export</button>
               <button className="btn btn-blue btn-small" onClick={showOpenDialog}>Open</button>
               <button className="btn btn-green btn-small" onClick={saveMap} disabled={saving}>
                 {saving ? "Saving..." : !isAdmin ? "Publish" : unsaved || !mapId ? "Save" : "Saved"}
@@ -478,6 +517,40 @@ function MapEditor({ onExit, isAdmin = false }) {
           )}
         </div>
       </div>
+
+      {mapJson && (
+        <div className="modal-backdrop" onMouseDown={(event) => {
+          if (event.target === event.currentTarget) setMapJson(null);
+        }}>
+          <section className="panel modal map-json" role="dialog" aria-modal="true" aria-labelledby="map-json-title">
+            <h2 id="map-json-title">{mapJson.mode === "export" ? "Export map" : "Import map"}</h2>
+            <p className="map-json-note">
+              {mapJson.mode === "export"
+                ? "Copy this and paste it into Import (here or on another server) to load the map."
+                : "Paste map JSON. It loads as a new map you can edit, then Save or Publish."}
+            </p>
+            <textarea
+              className="map-json-text"
+              value={mapJson.text}
+              readOnly={mapJson.mode === "export"}
+              autoFocus
+              spellCheck={false}
+              placeholder='{"name":"...","width":20,"height":14,...}'
+              onFocus={(event) => mapJson.mode === "export" && event.target.select()}
+              onChange={(event) => setMapJson({ ...mapJson, text: event.target.value, error: "" })}
+            />
+            {mapJson.error && <div className="error" role="alert">{mapJson.error}</div>}
+            <div className="modal-actions">
+              <button className="btn btn-gray" onClick={() => setMapJson(null)}>Close</button>
+              {mapJson.mode === "export" ? (
+                <button className="btn btn-green" onClick={copyExport}>Copy</button>
+              ) : (
+                <button className="btn btn-green" onClick={importMap} disabled={!mapJson.text.trim()}>Import</button>
+              )}
+            </div>
+          </section>
+        </div>
+      )}
 
       {savedMaps && (
         <div className="modal-backdrop" onMouseDown={(event) => {

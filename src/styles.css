@@ -147,6 +147,22 @@ button, input, select { font: inherit; color: inherit; }
 .modal h2 { margin: 0; font-size: 24px; text-align: center; overflow-wrap: anywhere; }
 .modal form { display: flex; flex-direction: column; gap: 12px; }
 .modal-actions { display: flex; gap: 10px; }
+.map-json { width: min(560px, 100%); }
+.map-json-note { margin: 0; color: var(--muted); font-size: 14px; text-align: center; }
+.map-json-text {
+  width: 100%;
+  height: 220px;
+  padding: 10px;
+  border: 2px solid #ccd3d8;
+  border-radius: 6px;
+  background: #f8fafb;
+  color: var(--text);
+  font: 12px/1.45 ui-monospace, "Cascadia Mono", Consolas, monospace;
+  resize: vertical;
+  outline: none;
+  overflow-wrap: anywhere;
+}
+.map-json-text:focus { border-color: var(--blue); }
 .modal-actions .btn { flex: 1; }
 
 /* Game */

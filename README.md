@@ -99,7 +99,7 @@ The password comes from the `ADMIN_PASSWORD` environment variable; if it isn't s
 `npm run build` builds the site into `dist/`, and `npm start` runs one Node process that serves both the site and the API (game links like `/k7m2qx` work), on `PORT` (default 3001).
 
 1. Push this project to a GitHub repository.
-2. In Railway: **New Project → Deploy from GitHub repo** and pick it. `railway.json` tells Railway to run `npm run build`, start with `npm start`, and health-check `/api/health`.
+2. In Railway: **New Project → Deploy from GitHub repo** and pick it. `railway.json` tells Railway to run `npm run build`, start with `node server/index.js` (directly, so shutdown signals reach the server and pending saves finish), and health-check `/api/health`.
 3. Add a **Volume** to the service (any mount path, e.g. `/data`). The server automatically stores its data there via `RAILWAY_VOLUME_MOUNT_PATH` (or set `SEIZE_DATA_DIR` yourself). Without a volume, data is lost on every deploy.
 4. Under **Variables**, set `ADMIN_PASSWORD`.
 5. Under **Settings → Networking**, click **Generate Domain** to get a public URL.
@@ -144,3 +144,16 @@ Ships can sail under bridges. A bridge is the only tile that can hold two units:
 ## Undo
 
 On your turn, **Ctrl+Z** (⌘Z on Mac) or the **Undo** button above End turn reverts your latest change — a purchase, move, attack, capture, wait or drop — for everyone. Only one step is kept: undoing again does nothing until you make another change. You can't undo after ending your turn, can't undo another player's change, and the move that wins the game can't be undone. The server keeps the previous state (`room.gameUndo`) and exposes who may undo as `game.undoSeat`; the action is `POST /api/rooms/:id/undo`.
+
+## Sharing maps as JSON
+
+In the map editor, **Export** shows the current map as one line of JSON (with a Copy button), and **Import** loads pasted JSON as a new, unsaved map that you can tweak and then Save/Publish — it never overwrites an existing map. Imports are checked with the same validation the server uses, so a bad paste just shows what's wrong. Anyone can import and export; publishing follows the usual rules.
+
+Ready-made examples live in `examples/maps/` — open a file, copy its contents, and paste it into Import:
+
+| File | Players | Size | Idea |
+|---|---|---|---|
+| `river-crossing.json` | 2 | 20×14 | A river splits the map; two bridges (each guarded by a blockade), ports on the river, mountain clusters |
+| `island-hop.json` | 2 | 22×14 | Two home islands and a rich middle island, each linked by one bridge; ports and airports matter |
+| `four-corners.json` | 4 | 20×20 | Four bases around a central lake, a ring road with blockades, flags in the middle |
+| `mountain-pass.json` | 2 | 18×12 | A mountain wall with two blockaded passes; infantry can climb straight over |
