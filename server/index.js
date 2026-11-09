@@ -119,16 +119,42 @@ function normalizeRoom(room) {
     room.gameMap = null;
     room.gameUnits = null;
     room.game = null;
+    room.gameUndo = null;
   }
   if (room.game) {
     upgradeGame(room.game, room.gameMap);
     // Don't let the game stall on a player who left: skip their turn.
     const connected = (playerId) => players.some((player) => player.id === playerId);
     const activePlayer = room.game.seats[room.game.active].playerId;
-    if (!room.game.winner && !connected(activePlayer)) endTurn(room.game, connected, room.gameUnits);
+    if (!room.game.winner && !connected(activePlayer)) {
+      endTurn(room.game, connected, room.gameUnits);
+      clearUndo(room);
+    }
   }
   if (room.mapId && room.status === "waiting" && !maps.some((map) => map.id === room.mapId)) room.mapId = null;
   return players;
+}
+
+// ---- Undo ----
+// Before each successful buy/move/attack/capture/wait/drop the previous game state is kept in
+// room.gameUndo (one level only). The player who made that change can put it back during the same
+// turn. Ending a turn clears it. game.undoSeat tells clients who may undo (null = nobody).
+
+function clearUndo(room) {
+  room.gameUndo = null;
+  if (room.game) room.game.undoSeat = null;
+}
+
+function undoLast(room, seatIndex) {
+  const undo = room.gameUndo;
+  if (!undo || undo.seatIndex !== seatIndex || seatIndex !== room.game.active) return "There's nothing to undo.";
+  const version = room.game.version + 1; // keep moving forward so clients accept the restored state
+  room.game = undo.snapshot;
+  room.game.version = version;
+  room.game.undoSeat = null;
+  room.game.lastAction = { version, kind: "undo", text: `${room.game.seats[seatIndex].name} undid their last change.` };
+  room.gameUndo = null;
+  return null;
 }
 
 function roomMap(room) {
@@ -332,7 +358,7 @@ async function handleRequest(request, response) {
   const mapRoute = route.pathname.match(/^\/api\/maps(?:\/([^/]+))?$/);
   if (mapRoute) return handleMapRequest(request, response, mapRoute[1]);
 
-  const roomRoute = route.pathname.match(/^\/api\/rooms(?:\/([^/]+))?(?:\/(join|heartbeat|leave|map|start|units|game|buy|move|attack|capture|wait|drop|end-turn))?$/);
+  const roomRoute = route.pathname.match(/^\/api\/rooms(?:\/([^/]+))?(?:\/(join|heartbeat|leave|map|start|units|game|buy|move|attack|capture|wait|drop|end-turn|undo))?$/);
   if (!roomRoute) return send(response, 404, { error: "Not found." });
 
   const [, roomId, action] = roomRoute;
@@ -463,7 +489,7 @@ async function handleRequest(request, response) {
     return send(response, 200, { room: publicRoom(room) });
   }
 
-  if (["buy", "move", "attack", "capture", "wait", "drop", "end-turn"].includes(action)) {
+  if (["buy", "move", "attack", "capture", "wait", "drop", "end-turn", "undo"].includes(action)) {
     if (!player) return send(response, 404, { error: "You are no longer in this room." });
     normalizeRoom(room);
     if (!room.game) return send(response, 409, { error: "This game hasn't started." });
@@ -471,6 +497,14 @@ async function handleRequest(request, response) {
     const seatIndex = room.game.seats.findIndex((seat) => seat.playerId === playerId);
     if (seatIndex === -1) return send(response, 403, { error: "You aren't playing in this game." });
     if (room.game.winner) return send(response, 409, { error: "The game is over." });
+
+    const before = structuredClone(room.game); // for undo
+    if (action === "undo") {
+      const error = undoLast(room, seatIndex);
+      if (error) return send(response, 400, { error });
+      await persistRooms();
+      return send(response, 200, { game: room.game });
+    }
 
     if (action === "buy") {
       const { x, y, unitId } = body;
@@ -481,12 +515,13 @@ async function handleRequest(request, response) {
       const { unitId, path } = body;
       const error = moveError(room.game, room.gameMap, room.gameUnits, seatIndex, unitId, path);
       if (error) return send(response, 400, { error });
-      applyMove(room.game, unitId, path);
+      applyMove(room.game, unitId, path, room.gameUnits, room.gameMap);
     } else if (action === "attack") {
-      const { unitId, x, y } = body; // the tile to attack: an enemy unit or a blockade
-      const error = attackError(room.game, room.gameUnits, seatIndex, unitId, x, y);
+      // The tile to attack (an enemy unit or a blockade); targetId picks one of two units on a bridge.
+      const { unitId, x, y, targetId = null } = body;
+      const error = attackError(room.game, room.gameUnits, seatIndex, unitId, x, y, targetId);
       if (error) return send(response, 400, { error });
-      applyAttack(room.game, room.gameUnits, unitId, x, y);
+      applyAttack(room.game, room.gameUnits, unitId, x, y, targetId);
     } else if (action === "capture") {
       const error = captureError(room.game, room.gameUnits, seatIndex, body.unitId);
       if (error) return send(response, 400, { error });
@@ -504,6 +539,13 @@ async function handleRequest(request, response) {
       if (seatIndex !== room.game.active) return send(response, 400, { error: "It's not your turn." });
       const connected = (id) => cleanPlayers(room).some((current) => current.id === id);
       endTurn(room.game, connected, room.gameUnits);
+    }
+    if (action === "end-turn" || room.game.winner) {
+      clearUndo(room); // can't undo into a previous turn, or out of a finished game
+    } else {
+      before.undoSeat = null;
+      room.gameUndo = { seatIndex, snapshot: before };
+      room.game.undoSeat = seatIndex;
     }
     await persistRooms();
     return send(response, 200, { game: room.game });

@@ -202,7 +202,11 @@ export class MapView {
     this[name] = next;
   }
 
-  /** Units drawn on top of the map: [{ x, y, tile, dim?, badges?, health? }]. `dim` greys the sprite out; badges: [{ tile, corner }]; health (0-100) draws a health bar. */
+  /**
+   * Units drawn on top of the map: [{ x, y, tile, dim?, badges?, health? }]. `dim` greys the sprite
+   * out; badges: [{ tile, corner }]; health (0-100) draws a health bar. `{ x, y, stack: [top, bottom] }`
+   * draws two units sharing a tile.
+   */
   setUnits(units) {
     this.replaceLayer("units", units);
   }
@@ -251,6 +255,18 @@ export class MapView {
     ctx.fillRect(x, y, Math.max(unit / 2, (width * health) / 100), height);
   }
 
+  /** One unit entry (sprite, badges, health bar) drawn into a square of `size` at (px, py). */
+  drawUnitEntry(ctx, unit, px, py, size) {
+    if (unit.dim) ctx.drawImage(this.dimmedSprite(unit.tile), px, py, size, size);
+    else if (unit.tile !== undefined) drawTile(ctx, this.sheet, unit.tile, px, py, size); // health-only entries have no sprite
+    // Half-size badges in a corner ("tl", "br", ...), e.g. the capture flag.
+    for (const badge of unit.badges ?? []) {
+      const half = size / 2;
+      drawTile(ctx, this.sheet, badge.tile, badge.corner.includes("r") ? px + half : px, badge.corner.includes("b") ? py + half : py, half);
+    }
+    if (unit.health !== undefined) this.drawHealthBar(ctx, unit.health, px, py, size);
+  }
+
   /** A greyed-out copy of a sprite, cached per tile. */
   dimmedSprite(tile) {
     this.dimmed ??= new Map();
@@ -278,14 +294,16 @@ export class MapView {
       const px = ((index % this.map.width) + MARGIN) * size;
       const py = (Math.floor(index / this.map.width) + MARGIN) * size;
       const unit = this.units?.get(index);
-      if (unit?.dim) ctx.drawImage(this.dimmedSprite(unit.tile), px, py, size, size);
-      else if (unit?.tile !== undefined) drawTile(ctx, this.sheet, unit.tile, px, py, size); // health-only entries have no sprite
-      // Half-size badges in a corner ("tl", "br", ...), e.g. the capture flag.
-      for (const badge of unit?.badges ?? []) {
-        const half = size / 2;
-        drawTile(ctx, this.sheet, badge.tile, badge.corner.includes("r") ? px + half : px, badge.corner.includes("b") ? py + half : py, half);
+      if (unit?.stack) {
+        // Two units on one tile (a boat under a bridge + a unit on top): the first is drawn smaller
+        // in the top-left, the second (the boat) smaller in the bottom-right, overlapping slightly.
+        const small = Math.round(size * 0.6);
+        const [top, bottom] = unit.stack;
+        this.drawUnitEntry(ctx, bottom, px + size - small, py + size - small, small);
+        this.drawUnitEntry(ctx, top, px, py, small);
+      } else if (unit) {
+        this.drawUnitEntry(ctx, unit, px, py, size);
       }
-      if (unit?.health !== undefined) this.drawHealthBar(ctx, unit.health, px, py, size);
       const overlay = this.overlay?.get(index);
       if (overlay?.tint) {
         ctx.fillStyle = overlay.tint;

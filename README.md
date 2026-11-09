@@ -43,7 +43,7 @@ When a game starts, players are seated in join order (P1 = red, P2 = blue, P3 = 
 
 ## Moving units
 
-On your turn, press on one of your units and drag: the tiles it can reach are tinted blue and an arrow follows the exact path you drag (dragging back over the path shortens it; dragging to a tile you can't reach in a straight continuation snaps to the cheapest route). Release to move. Each unit moves once per turn, and newly bought units wait until your next turn; moved units are greyed out. Movement points are the unit's Speed (+1 with Speedy). Costs per tile: air units 1 everywhere; sea units 1 on open water or a port (bridges block ships); land units 1 on roads, bridges and buildings and 1 on grass (2 with Treads), and can't enter water. Units can pass through friendly units but not enemies, and can't stop on another unit. The server re-checks every move (`POST /api/rooms/:id/move`).
+On your turn, press on one of your units and drag: the tiles it can reach are tinted blue and an arrow follows the exact path you drag (dragging back over the path shortens it; dragging to a tile you can't reach in a straight continuation snaps to the cheapest route). Release to move. Each unit moves once per turn, and newly bought units wait until your next turn; moved units are greyed out. Movement points are the unit's Speed (+1 with Speedy). Costs per tile: air units 1 everywhere; sea units 1 on water (including under bridges) or a port; land units 1 on roads, bridges and buildings and 1 on grass (2 with Treads), and can't enter water. Units can pass through friendly units but not enemies, and can't stop on another unit. The server re-checks every move (`POST /api/rooms/:id/move`).
 
 ## Capturing and combat
 
@@ -136,3 +136,11 @@ Games in progress are listed under **Live games** in the lobby with a **Watch** 
 ## Checking ranges
 
 In a game (as a player or a spectator), click any unit — yours or an enemy's — to tint every tile it could move to on its turn **blue**. Double-click a ranged unit (Ranged trait) to tint its attack range (2–3 tiles away) **orange** instead. Click empty ground to clear it. Clicking your own unit on your turn still opens its action panel as before (and pressing and dragging still moves it).
+
+## Boats under bridges
+
+Ships can sail under bridges. A bridge is the only tile that can hold two units: one boat underneath and one land or air unit on top. Units on different levels of a bridge don't block each other — a boat can pass under an enemy tank, and a tank can drive over an enemy boat — and either can stop there as long as nothing on its own level already is. Both are drawn on the tile (the unit on top in the upper-left, the boat in the lower-right, each with its own health bar). Clicking the tile picks your own unit that can still act first; press **F** to switch to the other unit on the tile (a hint shows when there is one) — if it's yours and can still act it becomes the selected unit, and pressing or dragging on the tile then uses it. If an attacker can hit both units on the tile, a small picker asks which one (the attack request then includes `targetId`).
+
+## Undo
+
+On your turn, **Ctrl+Z** (⌘Z on Mac) or the **Undo** button above End turn reverts your latest change — a purchase, move, attack, capture, wait or drop — for everyone. Only one step is kept: undoing again does nothing until you make another change. You can't undo after ending your turn, can't undo another player's change, and the move that wins the game can't be undone. The server keeps the previous state (`room.gameUndo`) and exposes who may undo as `game.undoSeat`; the action is `POST /api/rooms/:id/undo`.

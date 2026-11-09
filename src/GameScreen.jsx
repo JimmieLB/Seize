@@ -9,7 +9,7 @@ import {
   attackTargets,
   buildingAt,
   buyError,
-  canBoard,
+  blocksPath,
   canMove,
   captureError,
   captureGain,
@@ -24,7 +24,9 @@ import {
   previewAttack,
   propertyAt,
   reachable,
-  unitAt,
+  layerOf,
+  stopError,
+  unitsAt,
   unitSpeed,
 } from "../shared/gameRules.js";
 import { api } from "./api.js";
@@ -60,8 +62,7 @@ function extendPath(drag, map, game, cell) {
   const index = cell.y * map.width + cell.x;
   if (!reach.has(index)) return path;
   const adjacent = Math.abs(cell.x - last.x) + Math.abs(cell.y - last.y) === 1;
-  const other = unitAt(game, cell.x, cell.y);
-  const blocked = other && other.owner !== unit.owner;
+  const blocked = blocksPath(game, map, drag.unitDefs, unit, def, cell.x, cell.y);
   if (adjacent && !blocked && pathCost(map, def, path) + moveCost(map, def, cell.x, cell.y) <= unitSpeed(def, unit)) {
     return [...path, cell];
   }
@@ -86,6 +87,7 @@ function GameScreen({ room, playerId, onLeave, spectator = false }) {
   const [inspect, setInspect] = useState(null);
   const lastUnitClickRef = useRef(null); // { unitId, time }, to spot double clicks
   const [droppingId, setDroppingId] = useState(null); // cargo unit being dropped from the selected transport
+  const [pickTarget, setPickTarget] = useState(null); // { x, y } bridge tile with two targets: choose which to hit
   const [hover, setHover] = useState(null);
   const [error, setError] = useState("");
   const [toast, setToast] = useState(null); // { text, tone }
@@ -106,6 +108,8 @@ function GameScreen({ room, playerId, onLeave, spectator = false }) {
     const previous = previousGameRef.current;
     previousGameRef.current = game;
     if (!previous || previous.version === game.version) return; // first load: stay quiet
+    // An undo can remove a just-bought unit; that isn't a death, so no explosion.
+    if (game.lastAction?.kind === "undo" && game.lastAction.version === game.version) return;
     const alive = new Set(game.units.map((unit) => unit.id));
     if (previous.units.some((unit) => !alive.has(unit.id))) playSound("explode");
     const turnChanged = previous.active !== game.active || previous.turn !== game.turn;
@@ -169,6 +173,8 @@ function GameScreen({ room, playerId, onLeave, spectator = false }) {
   const winnerSeat = gameOver ? game.seats.find((seat) => seat.owner === game.winner) : null;
   const iWon = gameOver && winnerSeat?.playerId === playerId;
   const iLost = Boolean(mySeat?.defeated);
+  // The server keeps one step of undo for the player who made the latest change this turn.
+  const canUndo = myTurn && game?.undoSeat === mySeatIndex;
 
   // A defeated player who chose "Keep watching" still sees the final result when the game ends.
   useEffect(() => {
@@ -181,14 +187,16 @@ function GameScreen({ room, playerId, onLeave, spectator = false }) {
   const dropping = cargo.find((unit) => unit.id === droppingId) ?? null;
   const dropTargets = dropping ? dropTiles(game, setup.map, setup.unitDefs, selected, dropping) : [];
 
-  useEffect(() => setDroppingId(null), [selectedId]);
+  useEffect(() => {
+    setDroppingId(null);
+    setPickTarget(null);
+  }, [selectedId]);
 
   // Units, health bars and capture flags.
   useEffect(() => {
     if (!game || !setup || !viewRef.current) return;
     const activeOwner = game.seats[game.active].owner;
-    viewRef.current.setUnits(
-      game.units.filter((unit) => !unit.carriedBy).map((unit) => {
+    const entries = game.units.filter((unit) => !unit.carriedBy).map((unit) => {
         const badges = [];
         if (propertyAt(game, unit.x, unit.y)?.capture?.unitId === unit.id) badges.push({ tile: CAPTURE_BADGE_TILE, corner: "tl" });
         const carrying = cargoOf(game, unit).length;
@@ -200,14 +208,23 @@ function GameScreen({ room, playerId, onLeave, spectator = false }) {
           dim: unit.acted && unit.owner === activeOwner, // done for this turn
           badges,
           health: hpOf(unit) < MAX_HP ? hpOf(unit) : undefined, // health bar only when damaged
+          sea: layerOf(defsById.get(unit.unitId)) === "sea",
         };
-      }).concat(
-        // Damaged blockades show a health bar too (the blockade sprite is part of the map).
-        (game.blockades ?? [])
-          .filter((blockade) => blockade.hp < BLOCKADE_HP)
-          .map((blockade) => ({ x: blockade.x, y: blockade.y, health: (blockade.hp / BLOCKADE_HP) * 100 })),
-      ),
-    );
+    });
+    const byTile = new Map();
+    for (const entry of entries) {
+      const key = `${entry.x},${entry.y}`;
+      const other = byTile.get(key);
+      // A boat under a bridge plus a unit on top: draw both, boat bottom-right, the other top-left.
+      byTile.set(key, other ? { x: entry.x, y: entry.y, stack: entry.sea ? [other, entry] : [entry, other] } : entry);
+    }
+    viewRef.current.setUnits([
+      ...byTile.values(),
+      // Damaged blockades show a health bar too (the blockade sprite is part of the map).
+      ...(game.blockades ?? [])
+        .filter((blockade) => blockade.hp < BLOCKADE_HP)
+        .map((blockade) => ({ x: blockade.x, y: blockade.y, health: (blockade.hp / BLOCKADE_HP) * 100 })),
+    ]);
   }, [game, setup]);
 
   // Captured buildings/flags change colour; broken blockades disappear.
@@ -332,6 +349,7 @@ function GameScreen({ room, playerId, onLeave, spectator = false }) {
     dragRef.current = {
       unit,
       def,
+      unitDefs: setup.unitDefs,
       reach: reachable(game, setup.map, def, unit, setup.unitDefs),
       path: [{ x: unit.x, y: unit.y }],
     };
@@ -348,9 +366,9 @@ function GameScreen({ room, playerId, onLeave, spectator = false }) {
       return;
     }
     const end = drag.path[drag.path.length - 1];
-    const occupant = unitAt(game, end.x, end.y);
-    if (occupant && occupant.id !== drag.unit.id && !canBoard(game, setup.unitDefs, occupant, drag.unit)) {
-      notify("Units can't stop on another unit.");
+    const cantStop = stopError(game, setup.map, setup.unitDefs, drag.unit, drag.def, end.x, end.y);
+    if (cantStop) {
+      notify(cantStop);
       return;
     }
     setInspect(null);
@@ -359,12 +377,31 @@ function GameScreen({ room, playerId, onLeave, spectator = false }) {
     if (moved && !moved.carriedBy) setSelectedId(drag.unit.id); // after moving, pick capture / attack / wait
   }
 
+  /**
+   * The unit a click on this tile means. A bridge can hold two (boat below, unit on top): the one
+   * you switched to with F if it is one of them, otherwise prefer your
+   * own unit that can still act, then any of yours, then the first.
+   */
+  function pickUnitAt(cell) {
+    const here = unitsAt(game, cell.x, cell.y);
+    if (here.length < 2) return here[0] ?? null;
+    // Stick with the one you switched to with F (selected or being looked at).
+    const focused = here.find((unit) => unit.id === selectedId || unit.id === inspect?.unitId);
+    if (focused) return focused;
+    const mine = here.filter((unit) => unit.owner === mySeat?.owner);
+    return (myTurn && mine.find((unit) => !unit.acted)) || mine[0] || here[0];
+  }
+
+  /** Attacks whatever the selected unit can hit on this tile; asks which one if there are two. */
+  function attackAt(cell) {
+    const options = targets.filter((target) => sameCell(target, cell));
+    if (options.length === 0) return false;
+    if (options.length === 1) attackTarget(options[0]);
+    else setPickTarget({ x: cell.x, y: cell.y });
+    return true;
+  }
+
   function clickUnit(unit) {
-    // Attacking: with a unit selected, clicking an enemy in range attacks it.
-    if (selected && unit.owner !== selected.owner && targets.some((target) => sameCell(target, unit))) {
-      attackTile(unit);
-      return;
-    }
     const doubleClick = inspectUnit(unit); // highlight its range (any unit, any time)
     if (unit.owner !== mySeat?.owner || !myTurn) return;
     if (doubleClick) return; // showing a ranged unit's attack range, not moving it
@@ -386,7 +423,7 @@ function GameScreen({ room, playerId, onLeave, spectator = false }) {
     if (!game || !setup) return;
     if (spectator) {
       // Spectators can only look: clicking a unit shows its range.
-      const unit = unitAt(game, cell.x, cell.y);
+      const unit = pickUnitAt(cell);
       if (unit) inspectUnit(unit);
       else setInspect(null);
       return;
@@ -399,9 +436,11 @@ function GameScreen({ room, playerId, onLeave, spectator = false }) {
       }
       return;
     }
-    const unit = unitAt(game, cell.x, cell.y);
+    setPickTarget(null);
+    // With a unit selected, clicking an enemy (or blockade) in range attacks it.
+    if (selected && attackAt(cell)) return;
+    const unit = pickUnitAt(cell);
     if (unit) return clickUnit(unit);
-    if (selected && targets.some((target) => sameCell(target, cell))) return attackTile(cell); // a blockade
     setSelectedId(null);
     setInspect(null);
     const building = buildingAt(game, cell.x, cell.y);
@@ -413,8 +452,59 @@ function GameScreen({ room, playerId, onLeave, spectator = false }) {
     return setShop({ x: cell.x, y: cell.y, kind: building.kind, side });
   };
 
-  function attackTile({ x, y }) {
-    gameAction("attack", { unitId: selected.id, x, y }).then((updated) => updated && setSelectedId(null));
+  function attackTarget(target) {
+    setPickTarget(null);
+    gameAction("attack", { unitId: selected.id, x: target.x, y: target.y, targetId: target.unit?.id ?? null }).then(
+      (updated) => updated && setSelectedId(null),
+    );
+  }
+
+  /** Puts back the latest change (server-side, one step). */
+  function undoLast() {
+    if (!canUndo || busy) return;
+    dragRef.current = null;
+    setSelectedId(null);
+    setShop(null);
+    setInspect(null);
+    setPickTarget(null);
+    gameAction("undo");
+  }
+
+  useEffect(() => {
+    const onKeyDown = (event) => {
+      if (["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName)) return;
+      const key = event.key.toLowerCase();
+      if ((event.ctrlKey || event.metaKey) && key === "z" && !event.shiftKey) {
+        event.preventDefault();
+        handlersRef.current.undo();
+      } else if (key === "f" && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        handlersRef.current.swap();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+  handlersRef.current.undo = undoLast;
+  handlersRef.current.swap = swapUnit;
+
+  /** The unit currently selected or being looked at, and the other unit sharing its bridge tile (if any). */
+  function focusedPair() {
+    const current = selected ?? (inspect ? game?.units.find((unit) => unit.id === inspect.unitId && !unit.carriedBy) : null);
+    if (!current) return { current: null, other: null };
+    const other = unitsAt(game, current.x, current.y).find((unit) => unit.id !== current.id) ?? null;
+    return { current, other };
+  }
+
+  /** F: switch between the boat under a bridge and the unit on top of it. */
+  function swapUnit() {
+    if (dragRef.current) return;
+    const { other } = focusedPair();
+    if (!other) return;
+    setPickTarget(null);
+    setInspect({ unitId: other.id, mode: "move" });
+    // Your own unit that can still act becomes the selected one (ready to move or act).
+    if (myTurn && other.owner === mySeat?.owner && !other.acted) setSelectedId(other.id);
+    else setSelectedId(null);
   }
 
   /** Sends an action; resolves to the new game state, or null if it was refused. */
@@ -442,11 +532,15 @@ function GameScreen({ room, playerId, onLeave, spectator = false }) {
   // Action panel details for the selected unit.
   const canCapture = selected && !captureError(game, setup.unitDefs, mySeatIndex, selected.id);
   const progress = selected ? captureProgress(game, selected) : 0;
-  const hoverTarget = selected && hover ? targets.find((target) => sameCell(target, hover)) : null;
-  const preview = hoverTarget ? previewAttack(game, setup.unitDefs, selected, hoverTarget.x, hoverTarget.y) : null;
-  const hoverTargetName = hoverTarget
-    ? hoverTarget.kind === "blockade" ? "Blockade" : defsById.get(hoverTarget.unit.unitId).name
-    : "";
+  const hoverTargets = selected && hover ? targets.filter((target) => sameCell(target, hover)) : [];
+  const hoverTarget = hoverTargets.length === 1 ? hoverTargets[0] : null;
+  const preview = hoverTarget
+    ? previewAttack(game, setup.unitDefs, selected, hoverTarget.x, hoverTarget.y, hoverTarget.unit?.id ?? null)
+    : null;
+  const targetName = (target) => (target.kind === "blockade" ? "Blockade" : defsById.get(target.unit.unitId).name);
+  const pickOptions = selected && pickTarget ? targets.filter((target) => sameCell(target, pickTarget)) : [];
+  const swapTarget = game && setup && !dragRef.current ? focusedPair().other : null; // unit F would switch to
+  const hoverTargetName = hoverTarget ? targetName(hoverTarget) : "";
 
   return (
     <div className="game-screen">
@@ -494,7 +588,12 @@ function GameScreen({ room, playerId, onLeave, spectator = false }) {
         </div>
       )}
 
-      {myTurn && !shop && !selected && (
+      {swapTarget ? (
+        <div className={`game-hint${selected ? " game-hint-raised" : ""}`}>
+          Press <kbd>F</kbd> to switch to the {defsById.get(swapTarget.unitId).name}
+          {swapTarget.owner === mySeat?.owner ? "" : ` (${game.seats.find((seat) => seat.owner === swapTarget.owner)?.name ?? "enemy"})`}
+        </div>
+      ) : myTurn && !shop && !selected && (
         <div className="game-hint">Drag a unit to move it (onto a transport to board), or click your factory, airport or port to buy units.</div>
       )}
 
@@ -531,8 +630,27 @@ function GameScreen({ room, playerId, onLeave, spectator = false }) {
               })}
             </ul>
           )}
-          {dropping ? (
+          {pickOptions.length > 1 ? (
+            <div className="target-picker">
+              <p className="action-note">Two targets on this bridge — which one?</p>
+              {pickOptions.map((target) => {
+                const hit = previewAttack(game, setup.unitDefs, selected, target.x, target.y, target.unit?.id ?? null);
+                return (
+                  <button
+                    key={target.unit?.id ?? "blockade"}
+                    className="btn btn-red btn-small"
+                    disabled={busy}
+                    onClick={() => attackTarget(target)}
+                  >
+                    {targetName(target)} · deal {hit.dealt}%{hit.counter > 0 ? `, take ${hit.counter}%` : ""}
+                  </button>
+                );
+              })}
+            </div>
+          ) : dropping ? (
             <p className="action-note">Click a green tile to drop the {defsById.get(dropping.unitId).name}.</p>
+          ) : hoverTargets.length > 1 ? (
+            <p className="action-note">Two targets here (boat and unit on the bridge) — click to choose.</p>
           ) : preview ? (
             <p className="action-note">
               Attack {hoverTargetName}: deal{" "}
@@ -556,6 +674,12 @@ function GameScreen({ room, playerId, onLeave, spectator = false }) {
             <button className="action-cancel" onClick={() => setSelectedId(null)}>Cancel</button>
           </div>
         </section>
+      )}
+
+      {canUndo && (
+        <button className="btn btn-gray game-undo" disabled={busy} onClick={undoLast} title="Undo your last change (Ctrl+Z)">
+          Undo
+        </button>
       )}
 
       {game && !spectator && (

@@ -8,6 +8,7 @@
 //   income: { kind: cash per day } | null,      // building income, copied from the Buildings tab at start
 //   seats: [{ playerId, name, owner, funds, defeated }],   // owner = map colour slot (1-4); defeated = lost their HQ
 //   winner: owner number of the last player standing (game over), if any
+//   undoSeat: seat index allowed to undo the latest change (set by the server), or null
 //   blockades: [{ x, y, hp }],   // obstacles from the map; removed when their hp reaches 0
 //   properties: [{ x, y, kind, owner, capture }], // buildings + flags; owner changes when captured
 //                                                 // capture: null | { unitId, progress (0-100) }
@@ -42,6 +43,46 @@ export function buildingAt(game, x, y) {
 /** The unit standing on (x, y). Units being carried by a transport aren't on the map. */
 export function unitAt(game, x, y) {
   return game.units.find((unit) => unit.x === x && unit.y === y && !unit.carriedBy) ?? null;
+}
+
+/** Every unit standing on (x, y) — two at most, and only on a bridge (see below). */
+export function unitsAt(game, x, y) {
+  return game.units.filter((unit) => unit.x === x && unit.y === y && !unit.carriedBy);
+}
+
+// ---- Sharing a tile ----
+// A bridge is the only place two units can be: one boat underneath and one land or air unit on
+// top. Units on different levels of a bridge don't block each other (passing or stopping);
+// everywhere else, every unit on a tile counts.
+
+export function layerOf(def) {
+  return def?.type === "sea" ? "sea" : "surface";
+}
+
+export function isBridge(map, x, y) {
+  if (!map || x < 0 || y < 0 || x >= map.width || y >= map.height) return false;
+  const index = y * map.width + x;
+  return String(map.terrain[index]) === "1" && String(map.roads[index]) === "1";
+}
+
+/** Units on (x, y) that occupy the same space as a unit of type `def`. */
+function sameSpace(game, map, unitDefs, def, x, y) {
+  const here = unitsAt(game, x, y);
+  if (!unitDefs || !isBridge(map, x, y)) return here;
+  return here.filter((other) => layerOf(defOf(unitDefs, other)) === layerOf(def));
+}
+
+/** Whether an enemy stops `unit` (of type `def`) from passing through (x, y). */
+export function blocksPath(game, map, unitDefs, unit, def, x, y) {
+  return sameSpace(game, map, unitDefs, def, x, y).some((other) => other.owner !== unit.owner);
+}
+
+/** Why `unit` can't end its move on (x, y), or null if it can (boarding a transport counts as allowed). */
+export function stopError(game, map, unitDefs, unit, def, x, y) {
+  if (blockadeAt(game, x, y)) return "Units can't stop on a blockade.";
+  const others = sameSpace(game, map, unitDefs, def, x, y).filter((other) => other !== unit);
+  if (others.length === 0 || others.some((other) => canBoard(game, unitDefs, other, unit))) return null;
+  return "Units can't stop on another unit.";
 }
 
 /** Units being carried by a transport. */
@@ -157,7 +198,7 @@ export function buyError(game, unitDefs, seatIndex, x, y, unitId) {
   const building = buildingAt(game, x, y);
   if (!building || !PRODUCTION[building.kind]) return "Units can only be bought at a factory, airport or port.";
   if (building.owner !== seat.owner) return "You don't own that building.";
-  if (unitAt(game, x, y)) return "That building already has a unit on it.";
+  if (unitsAt(game, x, y).length > 0) return "That building already has a unit on it.";
   const unit = unitDefs.find((def) => def.id === unitId);
   if (!unit) return "Unknown unit.";
   if (unit.type !== PRODUCTION[building.kind]) return `${unit.name} can't be built there.`;
@@ -252,7 +293,7 @@ export function canBoard(game, unitDefs, transport, unit) {
 // ---- Movement ----
 // Costs per tile entered:
 //   air:  everything 1
-//   sea:  open water and ports 1, everything else impassable (bridges block ships)
+//   sea:  water (including under bridges) and ports 1, everything else impassable
 //   land: open water impassable; roads, bridges and buildings 1; grass 1 (2 with the Treads trait);
 //         mountains 2 for infantry/mech (Captures trait), impassable for other land units
 //   mountains: air 1, sea impassable
@@ -279,7 +320,7 @@ export function moveCost(map, def, x, y) {
   const building = buildingGrid(map)[index];
   const mountain = map.terrain[index] === "2";
   if (def.type === "air") return 1;
-  if (def.type === "sea") return (water && !road) || building === "port" ? 1 : Infinity;
+  if (def.type === "sea") return water || building === "port" ? 1 : Infinity;
   if (mountain) return def.traits?.includes("captures") ? 2 : Infinity;
   if (water && !road) return Infinity;
   if (road || building) return 1;
@@ -302,7 +343,7 @@ export function canMove(unit) {
  */
 function boardingCost(game, unitDefs, unit, x, y) {
   if (!game || !unitDefs || !unit) return Infinity;
-  return canBoard(game, unitDefs, unitAt(game, x, y), unit) ? 1 : Infinity;
+  return unitsAt(game, x, y).some((other) => canBoard(game, unitDefs, other, unit)) ? 1 : Infinity;
 }
 
 /**
@@ -328,8 +369,7 @@ export function reachable(game, map, def, unit, unitDefs = null) {
       if (boardOnly) step = boardingCost(game, unitDefs, unit, nx, ny);
       const next = cost + step;
       if (next > speed) continue;
-      const other = unitAt(game, nx, ny);
-      if (other && other.owner !== unit.owner) continue;
+      if (blocksPath(game, map, unitDefs, unit, def, nx, ny)) continue;
       if (def.type !== "air" && blockadeAt(game, nx, ny)) continue;
       const nextIndex = ny * map.width + nx;
       if (!best.has(nextIndex) || next < best.get(nextIndex).cost) {
@@ -375,28 +415,29 @@ export function moveError(game, map, unitDefs, seatIndex, unitId, path) {
     if (distance(step, previous) !== 1) return "Paths must move one tile at a time.";
     const boarding = index === path.length - 1 && boardingCost(game, unitDefs, unit, step.x, step.y) !== Infinity;
     if (moveCost(map, def, step.x, step.y) === Infinity && !boarding) return `${def.name} can't move there.`;
-    const other = unitAt(game, step.x, step.y);
-    if (other && other.owner !== unit.owner) return "Enemy units block the way.";
+    if (blocksPath(game, map, unitDefs, unit, def, step.x, step.y)) return "Enemy units block the way.";
     if (def.type !== "air" && blockadeAt(game, step.x, step.y)) return "A blockade is in the way.";
   }
   if (pathCost(map, def, path, game, unitDefs, unit) > unitSpeed(def, unit)) return "That's too far.";
   const end = path[path.length - 1];
-  if (blockadeAt(game, end.x, end.y)) return "Units can't stop on a blockade.";
-  const occupant = unitAt(game, end.x, end.y);
-  if (occupant && occupant !== unit && !canBoard(game, unitDefs, occupant, unit)) {
-    return "Units can't stop on another unit.";
-  }
-  return null;
+  return stopError(game, map, unitDefs, unit, def, end.x, end.y);
 }
 
-/** Moves a unit along a validated path. Ending on a friendly transport boards it. */
-export function applyMove(game, unitId, path) {
+/**
+ * Moves a unit along a validated path. Ending on a friendly transport (on the same level) boards it.
+ * Pass unitDefs and map so a unit can stop on a bridge above or below another unit.
+ */
+export function applyMove(game, unitId, path, unitDefs = null, map = null) {
   const unit = game.units.find((current) => current.id === unitId);
   // Leaving a tile abandons any capture in progress there.
   const left = propertyAt(game, unit.x, unit.y);
   if (left?.capture?.unitId === unit.id) left.capture = null;
   const end = path[path.length - 1];
-  const transport = unitAt(game, end.x, end.y);
+  const transport = unitDefs
+    ? sameSpace(game, map, unitDefs, defOf(unitDefs, unit), end.x, end.y).find(
+      (other) => other !== unit && canBoard(game, unitDefs, other, unit),
+    )
+    : unitAt(game, end.x, end.y);
   unit.x = end.x;
   unit.y = end.y;
   unit.moved = true;
@@ -415,7 +456,10 @@ export function applyMove(game, unitId, path) {
 export function dropTiles(game, map, unitDefs, transport, cargo) {
   const cargoDef = defOf(unitDefs, cargo);
   return DIRECTIONS.map(([dx, dy]) => ({ x: transport.x + dx, y: transport.y + dy })).filter(
-    (tile) => moveCost(map, cargoDef, tile.x, tile.y) !== Infinity && !unitAt(game, tile.x, tile.y) && !blockadeAt(game, tile.x, tile.y),
+    (tile) =>
+      moveCost(map, cargoDef, tile.x, tile.y) !== Infinity &&
+      sameSpace(game, map, unitDefs, cargoDef, tile.x, tile.y).length === 0 &&
+      !blockadeAt(game, tile.x, tile.y),
   );
 }
 
@@ -473,22 +517,27 @@ function canCounter(attacker, defender, defenderDef) {
   return defenderDef.attack > 0 && !defenderDef.traits?.includes("ranged") && distance(attacker, defender) === 1;
 }
 
-/** What `unit` could hit on (x, y): { kind: "unit", unit } | { kind: "blockade", blockade } | null. */
-function targetAt(game, unit, x, y) {
-  const other = unitAt(game, x, y);
-  if (other && other.owner !== unit.owner) return { kind: "unit", unit: other, x, y };
+/**
+ * What `unit` could hit on (x, y): { kind: "unit", unit } | { kind: "blockade", blockade } | null.
+ * A bridge can hold two enemies (boat + land unit): `targetId` picks one, otherwise the first.
+ */
+function targetAt(game, unit, x, y, targetId = null) {
+  const enemies = unitsAt(game, x, y).filter((other) => other.owner !== unit.owner);
+  const other = targetId == null ? enemies[0] : enemies.find((enemy) => enemy.id === targetId);
+  if (other) return { kind: "unit", unit: other, x, y };
+  if (targetId != null) return null;
   const blockade = blockadeAt(game, x, y);
   if (blockade) return { kind: "blockade", blockade, x, y };
   return null;
 }
 
-/** Returns why `unitId` can't attack the tile (x, y), or null if it can. */
-export function attackError(game, unitDefs, seatIndex, unitId, x, y) {
+/** Returns why `unitId` can't attack the tile (x, y) (or unit `targetId` on it), or null if it can. */
+export function attackError(game, unitDefs, seatIndex, unitId, x, y, targetId = null) {
   const [error, unit, def] = ownUnit(game, unitDefs, seatIndex, unitId);
   if (error) return error;
   if (unit.acted) return "That unit has already acted this turn.";
   if (def.attack <= 0) return `${def.name} can't attack.`;
-  const target = Number.isInteger(x) && Number.isInteger(y) ? targetAt(game, unit, x, y) : null;
+  const target = Number.isInteger(x) && Number.isInteger(y) ? targetAt(game, unit, x, y, targetId) : null;
   if (!target) return "Pick an enemy unit or a blockade to attack.";
   const range = attackRange(def);
   if (range.min > 1 && unit.moved) return "Ranged units can't move and attack in the same turn.";
@@ -497,20 +546,23 @@ export function attackError(game, unitDefs, seatIndex, unitId, x, y) {
   return null;
 }
 
-/** Tiles this unit could attack right now: [{ x, y, kind, unit? , blockade? }]. */
+/** Everything this unit could attack right now: [{ x, y, kind, unit?, blockade? }] (one per enemy unit/blockade). */
 export function attackTargets(game, unitDefs, seatIndex, unit) {
-  const candidates = [
-    ...game.units.filter((other) => other.owner !== unit.owner && !other.carriedBy),
-    ...(game.blockades ?? []),
+  const enemies = game.units.filter((other) => other.owner !== unit.owner && !other.carriedBy);
+  const blockades = game.blockades ?? [];
+  return [
+    ...enemies
+      .filter((enemy) => !attackError(game, unitDefs, seatIndex, unit.id, enemy.x, enemy.y, enemy.id))
+      .map((enemy) => targetAt(game, unit, enemy.x, enemy.y, enemy.id)),
+    ...blockades
+      .filter((blockade) => !attackError(game, unitDefs, seatIndex, unit.id, blockade.x, blockade.y))
+      .map((blockade) => ({ kind: "blockade", blockade, x: blockade.x, y: blockade.y })),
   ];
-  return candidates
-    .filter((target) => !attackError(game, unitDefs, seatIndex, unit.id, target.x, target.y))
-    .map((target) => targetAt(game, unit, target.x, target.y));
 }
 
-/** Predicted damage both ways for attacking (x, y), for UI previews. */
-export function previewAttack(game, unitDefs, unit, x, y) {
-  const target = targetAt(game, unit, x, y);
+/** Predicted damage both ways for attacking (x, y) (or unit `targetId` there), for UI previews. */
+export function previewAttack(game, unitDefs, unit, x, y, targetId = null) {
+  const target = targetAt(game, unit, x, y, targetId);
   const attackerDef = defOf(unitDefs, unit);
   const bonus = attackBonus(game, attackerDef, unit.owner);
   if (target.kind === "blockade") {
@@ -525,11 +577,11 @@ export function previewAttack(game, unitDefs, unit, x, y) {
   return { dealt: Math.min(dealt, hpOf(target.unit)), counter: Math.min(counter, hpOf(unit)) };
 }
 
-export function applyAttack(game, unitDefs, unitId, x, y) {
+export function applyAttack(game, unitDefs, unitId, x, y, targetId = null) {
   const attacker = game.units.find((current) => current.id === unitId);
   const attackerDef = defOf(unitDefs, attacker);
   const bonus = attackBonus(game, attackerDef, attacker.owner);
-  const target = targetAt(game, attacker, x, y);
+  const target = targetAt(game, attacker, x, y, targetId);
   const who = `${seatName(game, attacker.owner)}'s ${attackerDef.name}`;
   let text;
   if (target.kind === "blockade") {
