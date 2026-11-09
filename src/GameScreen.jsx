@@ -102,16 +102,30 @@ function GameScreen({ room, playerId, onLeave, spectator = false }) {
     setMutedState(!muted);
   }
 
-  // Sounds: a unit disappearing = it died; the active seat changing = a new turn.
+  // Sounds, worked out by comparing with the previous game state:
+  //   a unit disappearing = it died; a unit/blockade losing health but surviving = hurt;
+  //   capture progress rising or a property changing hands = capture; a new active seat = new turn.
   useEffect(() => {
     if (!game) return;
     const previous = previousGameRef.current;
     previousGameRef.current = game;
     if (!previous || previous.version === game.version) return; // first load: stay quiet
-    // An undo can remove a just-bought unit; that isn't a death, so no explosion.
+    // An undo puts things back (units reappear, health returns, captures reset): no sounds.
     if (game.lastAction?.kind === "undo" && game.lastAction.version === game.version) return;
-    const alive = new Set(game.units.map((unit) => unit.id));
-    if (previous.units.some((unit) => !alive.has(unit.id))) playSound("explode");
+    const now = new Map(game.units.map((unit) => [unit.id, unit]));
+    if (previous.units.some((unit) => !now.has(unit.id))) playSound("explode");
+    const unitHurt = previous.units.some((unit) => now.has(unit.id) && hpOf(now.get(unit.id)) < hpOf(unit));
+    const blockadeHurt = (previous.blockades ?? []).some((before) => {
+      const after = game.blockades?.find((blockade) => blockade.x === before.x && blockade.y === before.y);
+      return after && after.hp < before.hp;
+    });
+    if (unitHurt || blockadeHurt) playSound("hurt");
+    const captured = previous.properties.some((before, index) => {
+      const after = game.properties[index];
+      if (!after || after.x !== before.x || after.y !== before.y) return false;
+      return (after.capture?.progress ?? 0) > (before.capture?.progress ?? 0) || after.owner !== before.owner;
+    });
+    if (captured) playSound("capture");
     const turnChanged = previous.active !== game.active || previous.turn !== game.turn;
     if (turnChanged && !game.winner) {
       playSound(!spectator && game.seats[game.active].playerId === playerId ? "myTurn" : "otherTurn");
