@@ -6,7 +6,7 @@ const SOUNDS = {
   otherTurn: "/sounds/notif2.wav", // it's now someone else's turn
   explode: "/sounds/explode.wav", // a unit was destroyed
   hurt: "/sounds/hurt.wav", // a unit (or blockade) took damage and survived
-  capture: "/sounds/capture.wav", // a building or flag was captured (or capture progressed)
+  capture: "/sounds/capture.wav", // a building or flag was fully captured
 };
 const mutedKey = "seize-muted";
 const clips = {};

@@ -104,7 +104,7 @@ function GameScreen({ room, playerId, onLeave, spectator = false }) {
 
   // Sounds, worked out by comparing with the previous game state:
   //   a unit disappearing = it died; a unit/blockade losing health but surviving = hurt;
-  //   capture progress rising or a property changing hands = capture; a new active seat = new turn.
+  //   a property changing hands (fully captured) = capture; a new active seat = new turn.
   useEffect(() => {
     if (!game) return;
     const previous = previousGameRef.current;
@@ -123,7 +123,7 @@ function GameScreen({ room, playerId, onLeave, spectator = false }) {
     const captured = previous.properties.some((before, index) => {
       const after = game.properties[index];
       if (!after || after.x !== before.x || after.y !== before.y) return false;
-      return (after.capture?.progress ?? 0) > (before.capture?.progress ?? 0) || after.owner !== before.owner;
+      return after.owner !== before.owner; // only a completed capture, not partial progress
     });
     if (captured) playSound("capture");
     const turnChanged = previous.active !== game.active || previous.turn !== game.turn;

@@ -127,7 +127,7 @@ Attacks now target a tile (`POST /api/rooms/:id/attack` with `{ unitId, x, y }`)
 
 ## Sounds
 
-Sound files live in `public/sounds/`: `notif.wav` plays when the turn passes to you, `notif2.wav` when it passes to anyone else, `explode.wav` whenever a unit is destroyed (including units removed when a player is defeated), `hurt.wav` when a unit (or blockade) takes damage and survives, and `capture.wav` whenever a capture happens (progress goes up or a building/flag changes hands). Nothing plays on first load or when a change is undone. The 🔊 button next to Leave/Stop watching mutes sounds; the setting is remembered per browser. See `src/sounds.js`.
+Sound files live in `public/sounds/`: `notif.wav` plays when the turn passes to you, `notif2.wav` when it passes to anyone else, `explode.wav` whenever a unit is destroyed (including units removed when a player is defeated), `hurt.wav` when a unit (or blockade) takes damage and survives, and `capture.wav` when a building or flag is fully captured (changes hands). Nothing plays on first load or when a change is undone. The 🔊 button next to Leave/Stop watching mutes sounds; the setting is remembered per browser. See `src/sounds.js`.
 
 ## Spectating
 
