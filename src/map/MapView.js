@@ -377,6 +377,21 @@ export class MapView {
     return (x + 0.5 - left) / (this.camera.orthoRight - this.camera.orthoLeft);
   }
 
+  /** A cell's box in page (client) pixels: { left, top, right, bottom }. */
+  cellClientRect(x, y) {
+    const rect = this.canvas.getBoundingClientRect();
+    const left = this.camera.position.x + this.camera.orthoLeft;
+    const top = this.camera.position.y + this.camera.orthoTop;
+    const sx = rect.width / (this.camera.orthoRight - this.camera.orthoLeft);
+    const sy = rect.height / (this.camera.orthoTop - this.camera.orthoBottom);
+    return {
+      left: rect.left + (x - left) * sx,
+      right: rect.left + (x + 1 - left) * sx,
+      top: rect.top + (top + y) * sy,
+      bottom: rect.top + (top + y + 1) * sy,
+    };
+  }
+
   cellAt(event) {
     const world = this.screenToWorld(event.clientX, event.clientY);
     return { x: Math.floor(world.x), y: Math.floor(-world.y) };

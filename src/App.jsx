@@ -7,6 +7,7 @@ import { MAP_LIMITS } from "../shared/mapFormat.js";
 const GameScreen = lazy(() => import("./GameScreen.jsx"));
 const MapEditor = lazy(() => import("./MapEditor.jsx"));
 const UnitEditor = lazy(() => import("./UnitEditor.jsx"));
+const Tutorial = lazy(() => import("./Tutorial.jsx"));
 
 const playerIdKey = "seize-player-id";
 const playerNameKey = "seize-player-name";
@@ -328,6 +329,14 @@ function App() {
     );
   }
 
+  if (!joinedRoom && screen === "tutorial") {
+    return (
+      <Suspense fallback={<div className="lobby">Loading...</div>}>
+        <Tutorial onExit={() => setScreen("lobby")} />
+      </Suspense>
+    );
+  }
+
   if (!joinedRoom && screen === "units") {
     return (
       <Suspense fallback={<div className="lobby">Loading...</div>}>
@@ -384,6 +393,7 @@ function App() {
           <button className="btn btn-blue" onClick={() => { setError(""); setScreen("editor"); }}>Map editor</button>
           <button className="btn btn-blue" onClick={() => { setError(""); setScreen("units"); }}>Units</button>
         </div>
+        <button className="btn btn-gray btn-wide" onClick={() => { setError(""); setScreen("tutorial"); }}>How to play</button>
 
         {error && !dialog && <div className="error" role="alert">{error}</div>}
 

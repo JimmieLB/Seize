@@ -826,3 +826,103 @@ button:disabled { cursor: not-allowed; opacity: .55; filter: none; }
   .room-side { flex: none; }
   .room-status { margin-left: 0; }
 }
+
+/* Tutorial */
+.tutorial-layout {
+  flex: 1;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 16px;
+  padding: 16px;
+}
+.tutorial-nav { width: 220px; flex: 0 0 auto; gap: 4px; padding: 10px; }
+.tutorial-topic {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: #444;
+  font: inherit;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+}
+.tutorial-topic:hover { background: #eef2f4; }
+.tutorial-topic-active, .tutorial-topic-active:hover { background: var(--blue); color: #fff; }
+.tutorial-num {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: rgb(0 0 0 / 0.08);
+  font-size: 12px;
+}
+.tutorial-card { width: min(100%, 640px); gap: 14px; }
+.tutorial-head { display: flex; align-items: center; gap: 12px; }
+.tutorial-head h2 { margin: 0; font-size: 24px; }
+.tutorial-count { margin-left: auto; color: var(--muted); font-size: 13px; font-weight: 700; }
+.tutorial-body { color: #333; line-height: 1.5; }
+.tutorial-body p { margin: 0 0 10px; }
+.tutorial-body ol, .tutorial-body ul { margin: 0 0 10px; padding-left: 22px; }
+.tutorial-body li { margin-bottom: 6px; }
+.tutorial-body ul.tutorial-tiles { padding: 0; list-style: none; }
+.tutorial-tiles li { display: flex; align-items: center; gap: 10px; }
+.tutorial-tiles .tile-icon, .tutorial-head .tile-icon { flex: 0 0 auto; }
+.tutorial-muted { color: var(--muted); font-size: 14px; }
+.tutorial-traits {
+  margin: 0;
+  padding: 10px 12px;
+  list-style: none;
+  border-radius: 6px;
+  background: #eef2f4;
+  color: #444;
+  font-size: 13px;
+  display: grid;
+  gap: 4px;
+}
+.tutorial-buttons { display: flex; justify-content: space-between; margin-top: 4px; }
+
+@media (max-width: 720px) {
+  .tutorial-layout { flex-direction: column; align-items: stretch; }
+  .tutorial-nav { width: auto; flex-direction: row; flex-wrap: wrap; }
+  .tutorial-card { width: auto; }
+}
+
+/* Unit info card (hover a unit for 1s in game) */
+.unit-tip {
+  position: fixed;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+  animation: unit-tip-in 120ms ease-out;
+}
+@keyframes unit-tip-in { from { opacity: 0; transform: translateY(4px); } }
+.unit-tip-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--panel);
+  border-radius: 8px;
+  box-shadow: 0 4px 0 rgb(0 0 0 / 0.15), 0 6px 18px rgb(0 0 0 / 0.12);
+  font-size: 13px;
+}
+.unit-tip-head { display: flex; align-items: center; gap: 10px; }
+.unit-tip-head .tile-icon { flex: 0 0 auto; }
+.unit-tip-head b { display: block; font-size: 16px; }
+.unit-tip-head small { font-weight: 700; }
+.unit-tip-health { height: 6px; border-radius: 3px; background: #e6eaed; overflow: hidden; }
+.unit-tip-health span { display: block; height: 100%; background: var(--green); }
+.unit-tip-stats { display: grid; grid-template-columns: auto 1fr auto 1fr; gap: 3px 8px; margin: 0; }
+.unit-tip-stats dt { color: var(--muted); }
+.unit-tip-stats dd { margin: 0; font-weight: 700; }
+.unit-tip-stats em { color: var(--green); font-style: normal; }
+.unit-tip-traits { display: flex; flex-wrap: wrap; gap: 4px; }
+.unit-tip-note { margin: 0; color: var(--muted); }

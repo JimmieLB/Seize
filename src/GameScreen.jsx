@@ -35,6 +35,7 @@ import { MapView } from "./map/MapView.js";
 import { PLAYERS, fromSaved } from "./map/mapModel.js";
 import { getSheet } from "./map/renderMap.js";
 import TileIcon from "./map/TileIcon.jsx";
+import { TRAITS } from "../shared/unitFormat.js";
 import { KIND_LABELS, arrowTiles, unitTile } from "./map/tiles.js";
 
 const POLL_MS = 1000;
@@ -48,6 +49,10 @@ const DIGIT_TILE = 180; // tiles 180-189 are the digits 0-9 (cargo count on tran
 const CURSOR_TILE = 61;
 const CAPTURE_BADGE_TILE = 194; // small white flag
 const sameCell = (a, b) => a.x === b.x && a.y === b.y;
+const UNIT_TIP_DELAY_MS = 1000; // hover this long over a unit to see its info card
+const TIP_WIDTH = 240;
+const TRAIT_LABELS = Object.fromEntries(TRAITS.map((trait) => [trait.id, trait.label]));
+const TYPE_LABELS = { land: "Land", air: "Air", sea: "Sea" };
 
 /**
  * Next path while dragging: backtracking trims the path, an adjacent affordable step extends it,
@@ -70,6 +75,64 @@ function extendPath(drag, map, game, cell) {
 }
 
 
+/** Info card for the unit(s) on a tile, placed beside the tile (flipped left near the right edge). */
+function UnitInfoCard({ game, cell, defsById, view }) {
+  const units = unitsAt(game, cell.x, cell.y);
+  if (!view || units.length === 0) return null;
+  const rect = view.cellClientRect(cell.x, cell.y);
+  const left = rect.right + 8 + TIP_WIDTH > window.innerWidth ? rect.left - 8 - TIP_WIDTH : rect.right + 8;
+  const top = Math.max(8, Math.min(rect.top, window.innerHeight - 8 - 200 * units.length));
+  return (
+    <div className="unit-tip" style={{ left: Math.max(8, left), top, width: TIP_WIDTH }} role="tooltip">
+      {units.map((unit) => {
+        const def = defsById.get(unit.unitId);
+        const seat = game.seats.find((item) => item.owner === unit.owner);
+        const bonus = attackBonus(game, def, unit.owner);
+        const speed = unitSpeed(def, unit);
+        const range = attackRange(def);
+        const cargo = cargoOf(game, unit);
+        const capture = propertyAt(game, unit.x, unit.y)?.capture;
+        const theirTurn = game.seats[game.active]?.owner === unit.owner;
+        const status = !theirTurn ? null : unit.acted ? "Done this turn" : unit.moved ? "Moved" : null;
+        return (
+          <section className="unit-tip-card" key={unit.id}>
+            <div className="unit-tip-head">
+              <TileIcon tile={unitTile(def.sprite, unit.owner)} size={32} />
+              <div>
+                <b>{def.name}</b>
+                <small style={{ color: PLAYERS[unit.owner].color }}>
+                  {seat?.name ?? PLAYERS[unit.owner].label} · {TYPE_LABELS[def.type] ?? def.type}
+                </small>
+              </div>
+            </div>
+            <div className="unit-tip-health">
+              <span style={{ width: `${hpOf(unit)}%` }} />
+            </div>
+            <dl className="unit-tip-stats">
+              <dt>Health</dt><dd>{hpOf(unit)}%</dd>
+              <dt>Attack</dt><dd>{def.attack}{bonus > 0 && <em> +{bonus}</em>}</dd>
+              <dt>Defense</dt><dd>{def.defense}</dd>
+              <dt>Speed</dt><dd>{speed}{speed > def.speed && <em> (Speedy)</em>}</dd>
+              <dt>Range</dt><dd>{def.attack <= 0 ? "—" : range.min === range.max ? range.max : `${range.min}–${range.max}`}</dd>
+              <dt>Price</dt><dd>{formatFunds(def.price)}</dd>
+            </dl>
+            {def.traits?.length > 0 && (
+              <div className="unit-tip-traits">
+                {def.traits.map((id) => <span key={id} className="trait">{TRAIT_LABELS[id] ?? id}</span>)}
+              </div>
+            )}
+            {cargo.length > 0 && (
+              <p className="unit-tip-note">Carrying: {cargo.map((item) => defsById.get(item.unitId).name).join(", ")}</p>
+            )}
+            {capture?.unitId === unit.id && <p className="unit-tip-note">Capturing: {capture.progress ?? 0}%</p>}
+            {status && <p className="unit-tip-note">{status}</p>}
+          </section>
+        );
+      })}
+    </div>
+  );
+}
+
 /** `spectator`: watching a live game — everything updates, but nothing can be clicked or changed. */
 function GameScreen({ room, playerId, onLeave, spectator = false }) {
   const canvasRef = useRef(null);
@@ -89,6 +152,7 @@ function GameScreen({ room, playerId, onLeave, spectator = false }) {
   const [droppingId, setDroppingId] = useState(null); // cargo unit being dropped from the selected transport
   const [pickTarget, setPickTarget] = useState(null); // { x, y } bridge tile with two targets: choose which to hit
   const [hover, setHover] = useState(null);
+  const [unitTip, setUnitTip] = useState(null); // { x, y } tile whose unit info card is showing
   const [error, setError] = useState("");
   const [toast, setToast] = useState(null); // { text, tone }
   const [busy, setBusy] = useState(false);
@@ -169,6 +233,30 @@ function GameScreen({ room, playerId, onLeave, spectator = false }) {
       viewRef.current = null;
     };
   }, [room.id]);
+
+  useEffect(() => {
+    setUnitTip(null);
+    if (!hover || !game || dragRef.current || unitsAt(game, hover.x, hover.y).length === 0) return undefined;
+    const timer = window.setTimeout(() => {
+      if (!dragRef.current) setUnitTip({ x: hover.x, y: hover.y });
+    }, UNIT_TIP_DELAY_MS);
+    return () => window.clearTimeout(timer);
+    // Only the hovered tile restarts the timer; game updates while waiting don't.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hover?.x, hover?.y, Boolean(hover)]);
+
+  useEffect(() => {
+    if (!unitTip) return undefined;
+    const hide = () => setUnitTip(null);
+    window.addEventListener("pointerdown", hide);
+    window.addEventListener("wheel", hide);
+    window.addEventListener("keydown", hide);
+    return () => {
+      window.removeEventListener("pointerdown", hide);
+      window.removeEventListener("wheel", hide);
+      window.removeEventListener("keydown", hide);
+    };
+  }, [unitTip]);
 
   useEffect(() => {
     if (!setup) return undefined;
@@ -610,6 +698,8 @@ function GameScreen({ room, playerId, onLeave, spectator = false }) {
       ) : myTurn && !shop && !selected && (
         <div className="game-hint">Drag a unit to move it (onto a transport to board), or click your factory, airport or port to buy units.</div>
       )}
+
+      {unitTip && <UnitInfoCard game={game} cell={unitTip} defsById={defsById} view={viewRef.current} />}
 
       {selected && (
         <section className="panel action-panel" aria-label="Unit actions">
