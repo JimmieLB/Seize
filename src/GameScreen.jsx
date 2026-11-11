@@ -172,8 +172,10 @@ const AMBIENT_STEP_MS = 1500; // home screen background: one change every 1.5 se
  * `replay`: a saved replay ({ map, unitDefs, frames, ... }) played back with its own controls.
  * `ambient`: with `replay`, a silent autoplaying background (home screen) with no controls or input;
  *   `onLeave` is called when it reaches the end.
+ * `fitArea`: optional () => client rect ({ left, top, right, bottom }) the map is fitted into
+ *   instead of the whole screen (the rest of the screen still shows water).
  */
-function GameScreen({ room, playerId, onLeave, spectator: watching = false, replay = null, ambient = false }) {
+function GameScreen({ room, playerId, onLeave, spectator: watching = false, replay = null, ambient = false, fitArea = null }) {
   const spectator = watching || Boolean(replay);
   const canvasRef = useRef(null);
   const viewRef = useRef(null);
@@ -281,6 +283,7 @@ function GameScreen({ room, playerId, onLeave, spectator: watching = false, repl
         view.setBorderVisible(false); // only shown while choosing where to move a unit
         modelRef.current = fromSaved(map);
         view.setMap(modelRef.current, { fit: true });
+        if (fitArea) view.setFitArea(fitArea);
         viewRef.current = view;
         lastActionRef.current = initial.lastAction?.version ?? null;
         setSetup({ map, unitDefs: units });

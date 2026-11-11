@@ -983,23 +983,16 @@ button:disabled { cursor: not-allowed; opacity: .55; filter: none; }
 .replay-status span:first-child { flex: 0 0 auto; font-weight: 700; }
 .replay-action { overflow: hidden; color: #333; text-overflow: ellipsis; white-space: nowrap; }
 
-/* Home screen: a random replay plays to the right of the menu */
-.lobby-row { display: flex; align-items: stretch; justify-content: center; gap: 20px; width: 100%; }
-.lobby-row > .panel { flex-shrink: 0; }
-.lobby-replay {
-  position: relative;
-  flex: 0 1 640px;
-  min-width: 0;
-  min-height: 420px;
-  overflow: hidden;
-  border-radius: 10px;
-  background: var(--panel);
-  box-shadow: 0 4px 0 rgb(0 0 0 / 0.12);
-}
-.game-ambient { position: absolute; inset: 0; pointer-events: none; }
+/* Home screen: a random replay plays full screen, with the map fitted beside the menu */
+.lobby { isolation: isolate; }
+.lobby-row { display: flex; align-items: center; justify-content: center; gap: 24px; width: 100%; }
+.lobby-row > .panel { flex-shrink: 0; position: relative; }
+/* Empty box marking where the replay's map goes; the water behind it covers the whole screen. */
+.lobby-replay { flex: 0 1 960px; min-width: 0; height: min(80vh, 820px); }
+.game-ambient { z-index: -1; pointer-events: none; }
 @media (max-width: 760px) {
-  .lobby-row { flex-direction: column; align-items: center; }
-  .lobby-replay { flex: none; width: min(100%, 380px); min-height: 0; height: 280px; }
+  .lobby-row { flex-direction: column; }
+  .lobby-replay { flex: none; width: 100%; height: 320px; }
 }
 
 /* In-game resign */

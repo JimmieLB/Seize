@@ -47,6 +47,8 @@ function LobbyBackground() {
   const [replay, setReplay] = useState(null);
   const lastIdRef = useRef(null);
   const runRef = useRef(0); // remounts the view each time, even for the same replay
+  const areaRef = useRef(null);
+  const fitArea = useCallback(() => areaRef.current?.getBoundingClientRect() ?? null, []);
   const next = useCallback(async () => {
     try {
       const { replays } = await api("/api/replays");
@@ -68,8 +70,9 @@ function LobbyBackground() {
     next();
   }, [next]);
   if (!replay) return null;
+  // The water fills the whole screen; the map itself is fitted into this box beside the menu.
   return (
-    <div className="lobby-replay">
+    <div className="lobby-replay" ref={areaRef}>
       <Suspense fallback={null}>
         <GameScreen
           key={replay.run}
@@ -78,6 +81,7 @@ function LobbyBackground() {
           onLeave={next}
           replay={replay}
           ambient
+          fitArea={fitArea}
         />
       </Suspense>
     </div>

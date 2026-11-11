@@ -68,7 +68,8 @@ export class MapView {
 
     this.resizeObserver = new ResizeObserver(() => {
       this.engine.resize();
-      this.updateOrtho();
+      if (this.fitArea) this.fit();
+      else this.updateOrtho();
     });
     this.resizeObserver.observe(canvas);
 
@@ -344,9 +345,31 @@ export class MapView {
     this.camera.orthoRight = halfWidth;
   }
 
+  /**
+   * Makes `fit` place the map inside part of the canvas instead of all of it.
+   * `getArea` returns a client-pixel rect ({ left, top, right, bottom }) or null for the whole canvas.
+   * While set, the map is refitted whenever the canvas resizes.
+   */
+  setFitArea(getArea) {
+    this.fitArea = getArea;
+    this.fit();
+  }
+
   fit() {
     if (!this.map) return;
     const { width, height } = this.map;
+    const area = this.fitArea?.();
+    const rect = this.canvas.getBoundingClientRect();
+    if (area && rect.width > 0 && rect.height > 0 && area.right - area.left > 0 && area.bottom - area.top > 0) {
+      const worldPerPixel = Math.max(width / (area.right - area.left), height / (area.bottom - area.top)) * 1.04;
+      const dx = (area.left + area.right) / 2 - (rect.left + rect.width / 2);
+      const dy = (area.top + area.bottom) / 2 - (rect.top + rect.height / 2);
+      this.camera.position.x = width / 2 - dx * worldPerPixel;
+      this.camera.position.y = -height / 2 + dy * worldPerPixel;
+      this.zoom = (worldPerPixel * rect.height) / 2;
+      this.updateOrtho();
+      return;
+    }
     this.camera.position.x = width / 2;
     this.camera.position.y = -height / 2;
     this.zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Math.max(height / 2, width / 2 / this.aspect()) * 1.08));
