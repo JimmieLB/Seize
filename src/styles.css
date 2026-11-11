@@ -983,12 +983,24 @@ button:disabled { cursor: not-allowed; opacity: .55; filter: none; }
 .replay-status span:first-child { flex: 0 0 auto; font-weight: 700; }
 .replay-action { overflow: hidden; color: #333; text-overflow: ellipsis; white-space: nowrap; }
 
-/* Home screen: a random replay plays behind the lobby */
-.game-ambient { z-index: 0; pointer-events: none; }
-.game-ambient::after { content: ""; position: absolute; inset: 0; background: rgb(238 242 244 / 0.35); }
-.lobby-over-replay { position: relative; z-index: 1; }
-.lobby-over-replay .logo { text-shadow: 0 3px 0 rgb(255 255 255 / 0.8), 0 0 18px rgb(255 255 255 / 0.9); }
-.lobby-over-replay .admin-link, .lobby-over-replay > a, .lobby-over-replay > button { text-shadow: 0 0 6px #fff; }
+/* Home screen: a random replay plays to the right of the menu */
+.lobby-row { display: flex; align-items: stretch; justify-content: center; gap: 20px; width: 100%; }
+.lobby-row > .panel { flex-shrink: 0; }
+.lobby-replay {
+  position: relative;
+  flex: 0 1 640px;
+  min-width: 0;
+  min-height: 420px;
+  overflow: hidden;
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: 0 4px 0 rgb(0 0 0 / 0.12);
+}
+.game-ambient { position: absolute; inset: 0; pointer-events: none; }
+@media (max-width: 760px) {
+  .lobby-row { flex-direction: column; align-items: center; }
+  .lobby-replay { flex: none; width: min(100%, 380px); min-height: 0; height: 280px; }
+}
 
 /* In-game resign */
 .game-resign { padding: 6px 12px; }

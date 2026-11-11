@@ -69,16 +69,18 @@ function LobbyBackground() {
   }, [next]);
   if (!replay) return null;
   return (
-    <Suspense fallback={null}>
-      <GameScreen
-        key={replay.run}
-        room={{ id: replay.id, name: replay.roomName }}
-        playerId=""
-        onLeave={next}
-        replay={replay}
-        ambient
-      />
-    </Suspense>
+    <div className="lobby-replay">
+      <Suspense fallback={null}>
+        <GameScreen
+          key={replay.run}
+          room={{ id: replay.id, name: replay.roomName }}
+          playerId=""
+          onLeave={next}
+          replay={replay}
+          ambient
+        />
+      </Suspense>
+    </div>
   );
 }
 
@@ -422,11 +424,10 @@ function App() {
   }
 
   return (
-    <>
-    {!watchingRoom && <LobbyBackground />}
-    <main className="lobby lobby-over-replay">
+    <main className="lobby">
       <h1 className="logo">seize<span>.io</span></h1>
 
+      <div className="lobby-row">
       <section className="panel">
         <input
           className="nick-input"
@@ -513,6 +514,8 @@ function App() {
           </>
         )}
       </section>
+      {!watchingRoom && <LobbyBackground />}
+      </div>
 
       <div className="admin-status">
         {isAdmin ? (
@@ -575,7 +578,6 @@ function App() {
         </div>
       )}
     </main>
-    </>
   );
 }
 
