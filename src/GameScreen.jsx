@@ -133,8 +133,48 @@ function UnitInfoCard({ game, cell, defsById, view }) {
   );
 }
 
-/** `spectator`: watching a live game — everything updates, but nothing can be clicked or changed. */
-function GameScreen({ room, playerId, onLeave, spectator = false }) {
+/** One line saying what changed between two replay states. */
+function describeStep(before, after, defsById) {
+  if (after.lastAction && after.lastAction.version === after.version) return after.lastAction.text;
+  const seatName = (owner) => after.seats.find((seat) => seat.owner === owner)?.name ?? "Someone";
+  const unitName = (unit) => defsById.get(unit.unitId)?.name ?? "unit";
+  const aUnit = (unit) => `${/^[aeiou]/i.test(unitName(unit)) ? "an" : "a"} ${unitName(unit)}`;
+  if (after.winner) return `${seatName(after.winner)} wins!`;
+  if (before.active !== after.active || before.turn !== after.turn) {
+    return `${before.seats[before.active].name} ended their turn.`;
+  }
+  const old = new Map(before.units.map((unit) => [unit.id, unit]));
+  const bought = after.units.find((unit) => !old.has(unit.id));
+  if (bought) return `${seatName(bought.owner)} bought ${aUnit(bought)}.`;
+  for (const unit of after.units) {
+    const prev = old.get(unit.id);
+    if (!prev) continue;
+    if (prev.carriedBy !== unit.carriedBy) {
+      return unit.carriedBy ? `${seatName(unit.owner)} loaded ${aUnit(unit)}.` : `${seatName(unit.owner)} dropped off ${aUnit(unit)}.`;
+    }
+  }
+  const moved = after.units.find((unit) => {
+    const prev = old.get(unit.id);
+    return prev && !unit.carriedBy && (prev.x !== unit.x || prev.y !== unit.y);
+  });
+  if (moved) return `${seatName(moved.owner)} moved their ${unitName(moved)}.`;
+  const waited = after.units.find((unit) => old.get(unit.id) && !old.get(unit.id).acted && unit.acted);
+  if (waited) return `${seatName(waited.owner)}'s ${unitName(waited)} waited.`;
+  return "";
+}
+
+const REPLAY_SPEEDS = [0.5, 1, 2, 4];
+const REPLAY_STEP_MS = 900; // time per recorded change at 1x
+const AMBIENT_STEP_MS = 1500; // home screen background: one change every 1.5 seconds
+
+/**
+ * `spectator`: watching a live game — everything updates, but nothing can be clicked or changed.
+ * `replay`: a saved replay ({ map, unitDefs, frames, ... }) played back with its own controls.
+ * `ambient`: with `replay`, a silent autoplaying background (home screen) with no controls or input;
+ *   `onLeave` is called when it reaches the end.
+ */
+function GameScreen({ room, playerId, onLeave, spectator: watching = false, replay = null, ambient = false }) {
+  const spectator = watching || Boolean(replay);
   const canvasRef = useRef(null);
   const viewRef = useRef(null);
   const modelRef = useRef(null); // map model drawn by the view; property owners are synced into it
@@ -158,6 +198,10 @@ function GameScreen({ room, playerId, onLeave, spectator = false }) {
   const [busy, setBusy] = useState(false);
   const [hideResult, setHideResult] = useState(false); // dismissed the win/defeat screen to look at the map
   const [muted, setMutedState] = useState(isMuted);
+  const [frame, setFrame] = useState(0); // replay position
+  const [playing, setPlaying] = useState(ambient);
+  const [speed, setSpeed] = useState(1);
+  const quietRef = useRef(false); // replay jumped (not one step forward): skip sounds once
 
   useEffect(preloadSounds, []);
 
@@ -173,7 +217,11 @@ function GameScreen({ room, playerId, onLeave, spectator = false }) {
     if (!game) return;
     const previous = previousGameRef.current;
     previousGameRef.current = game;
-    if (!previous || previous.version === game.version) return; // first load: stay quiet
+    if (!previous || previous.version === game.version || ambient) return; // first load: stay quiet
+    if (quietRef.current) {
+      quietRef.current = false;
+      return;
+    }
     // An undo puts things back (units reappear, health returns, captures reset): no sounds.
     if (game.lastAction?.kind === "undo" && game.lastAction.version === game.version) return;
     const now = new Map(game.units.map((unit) => [unit.id, unit]));
@@ -197,18 +245,30 @@ function GameScreen({ room, playerId, onLeave, spectator = false }) {
   }, [game]);
 
   const notify = (text, tone = "error") => setToast({ text, tone });
+
+  async function resign() {
+    if (!window.confirm("Resign this game? Your units are removed and your buildings become neutral. This can't be undone.")) return;
+    dragRef.current = null;
+    setSelectedId(null);
+    setShop(null);
+    setInspect(null);
+    await gameAction("resign");
+  }
   // Only ever move forward: a slow poll must not overwrite a newer state from our own action.
   const acceptGame = (latest) => setGame((current) => (current && current.version >= latest.version ? current : latest));
 
   useEffect(() => {
     let view;
     let cancelled = false;
-    Promise.all([
-      getSheet(),
-      api(`/api/rooms/${room.id}/map`),
-      api(`/api/rooms/${room.id}/units`),
-      api(`/api/rooms/${room.id}/game`),
-    ])
+    const sources = replay
+      ? [getSheet(), { map: replay.map }, { units: replay.unitDefs }, { game: replay.frames[0] }]
+      : [
+          getSheet(),
+          api(`/api/rooms/${room.id}/map`),
+          api(`/api/rooms/${room.id}/units`),
+          api(`/api/rooms/${room.id}/game`),
+        ];
+    Promise.all(sources)
       .then(([sheet, { map }, { units }, { game: initial }]) => {
         if (cancelled) return;
         view = new MapView(canvasRef.current, sheet, {
@@ -258,8 +318,55 @@ function GameScreen({ room, playerId, onLeave, spectator = false }) {
     };
   }, [unitTip]);
 
+  // Replay playback: show the chosen frame; while playing, step forward on a timer.
   useEffect(() => {
-    if (!setup) return undefined;
+    if (replay && setup) setGame(replay.frames[frame]);
+  }, [replay, setup, frame]);
+
+  useEffect(() => {
+    if (!replay || !playing) return undefined;
+    if (frame >= replay.frames.length - 1) {
+      if (ambient) {
+        const timer = window.setTimeout(onLeave, AMBIENT_STEP_MS * 2); // linger on the result, then next replay
+        return () => window.clearTimeout(timer);
+      }
+      setPlaying(false);
+      return undefined;
+    }
+    const delay = ambient ? AMBIENT_STEP_MS : REPLAY_STEP_MS / speed;
+    const timer = window.setTimeout(() => setFrame((current) => current + 1), delay);
+    return () => window.clearTimeout(timer);
+  }, [replay, playing, frame, speed]);
+
+  function seekReplay(next) {
+    const target = Math.max(0, Math.min(replay.frames.length - 1, next));
+    if (target === frame) return;
+    if (target !== frame + 1) quietRef.current = true;
+    setInspect(null);
+    setFrame(target);
+  }
+
+  useEffect(() => {
+    if (!replay || ambient) return undefined;
+    const onKey = (event) => {
+      if (event.target.closest?.("input, select, textarea")) return;
+      if (event.key === " ") {
+        event.preventDefault();
+        setPlaying((current) => !current);
+      } else if (event.key === "ArrowRight") {
+        setPlaying(false);
+        seekReplay(frame + 1);
+      } else if (event.key === "ArrowLeft") {
+        setPlaying(false);
+        seekReplay(frame - 1);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
+  useEffect(() => {
+    if (!setup || replay) return undefined;
     const intervalId = window.setInterval(() => {
       api(`/api/rooms/${room.id}/game`).then(({ game: latest }) => acceptGame(latest)).catch(() => {});
     }, POLL_MS);
@@ -573,6 +680,7 @@ function GameScreen({ room, playerId, onLeave, spectator = false }) {
   }
 
   useEffect(() => {
+    if (ambient) return undefined; // the home screen background takes no input
     const onKeyDown = (event) => {
       if (["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName)) return;
       const key = event.key.toLowerCase();
@@ -628,7 +736,7 @@ function GameScreen({ room, playerId, onLeave, spectator = false }) {
     }
   }
 
-  const connected = (id) => room.players.some((player) => player.id === id);
+  const connected = (id) => replay || (room.players ?? []).some((player) => player.id === id); // replays have no live players
   const shopUnits = shop ? setup.unitDefs.filter((def) => def.type === PRODUCTION[shop.kind]) : [];
 
   // Action panel details for the selected unit.
@@ -644,11 +752,19 @@ function GameScreen({ room, playerId, onLeave, spectator = false }) {
   const swapTarget = game && setup && !dragRef.current ? focusedPair().other : null; // unit F would switch to
   const hoverTargetName = hoverTarget ? targetName(hoverTarget) : "";
 
+  if (ambient) {
+    return (
+      <div className="game-screen game-ambient" aria-hidden="true" data-step={frame}>
+        <canvas ref={canvasRef} className="game-canvas" tabIndex={-1} />
+      </div>
+    );
+  }
+
   return (
     <div className="game-screen">
       <canvas ref={canvasRef} className="game-canvas" />
       <div className="game-top-left">
-        <button className="btn btn-red" onClick={onLeave}>{spectator ? "Stop watching" : "Leave room"}</button>
+        <button className="btn btn-red" onClick={onLeave}>{replay ? "Close replay" : spectator ? "Stop watching" : "Leave room"}</button>
         <button
           className="btn btn-gray btn-small game-mute"
           onClick={toggleMute}
@@ -658,7 +774,12 @@ function GameScreen({ room, playerId, onLeave, spectator = false }) {
         >
           {muted ? "🔇" : "🔊"}
         </button>
-        {spectator && <span className="spectating-badge">Spectating</span>}
+        {spectator && <span className="spectating-badge">{replay ? "Replay" : "Spectating"}</span>}
+        {!spectator && game && !gameOver && mySeat && !mySeat.defeated && (
+          <button className="btn btn-gray btn-small game-resign" disabled={busy} onClick={resign} title="Give up this game">
+            Resign
+          </button>
+        )}
       </div>
 
       {game && (
@@ -827,7 +948,43 @@ function GameScreen({ room, playerId, onLeave, spectator = false }) {
         </section>
       )}
 
-      {(gameOver || iLost) && !hideResult && (
+      {replay && game && (
+        <div className="replay-bar panel" aria-label="Replay controls">
+          <div className="replay-buttons">
+            <button className="btn btn-gray btn-small" onClick={() => { setPlaying(false); seekReplay(0); }} title="Start" aria-label="Go to start">|◀</button>
+            <button className="btn btn-gray btn-small" onClick={() => { setPlaying(false); seekReplay(frame - 1); }} title="Previous step (←)" aria-label="Previous step">◀</button>
+            <button
+              className="btn btn-blue btn-small replay-play"
+              onClick={() => {
+                if (!playing && frame >= replay.frames.length - 1) seekReplay(0);
+                setPlaying(!playing);
+              }}
+              title="Play / pause (Space)"
+            >
+              {playing ? "Pause" : "Play"}
+            </button>
+            <button className="btn btn-gray btn-small" onClick={() => { setPlaying(false); seekReplay(frame + 1); }} title="Next step (→)" aria-label="Next step">▶</button>
+            <button className="btn btn-gray btn-small" onClick={() => { setPlaying(false); seekReplay(replay.frames.length - 1); }} title="End" aria-label="Go to end">▶|</button>
+            <select value={speed} onChange={(event) => setSpeed(Number(event.target.value))} aria-label="Playback speed">
+              {REPLAY_SPEEDS.map((value) => <option key={value} value={value}>{value}x</option>)}
+            </select>
+          </div>
+          <input
+            type="range"
+            min="0"
+            max={replay.frames.length - 1}
+            value={frame}
+            onChange={(event) => seekReplay(Number(event.target.value))}
+            aria-label="Replay position"
+          />
+          <div className="replay-status">
+            <span>Step {frame + 1} / {replay.frames.length}</span>
+            <span className="replay-action">{frame > 0 ? describeStep(replay.frames[frame - 1], game, defsById) : "Game start"}</span>
+          </div>
+        </div>
+      )}
+
+      {!replay && (gameOver || iLost) && !hideResult && (
         <div className="game-result-backdrop">
           <section
             className={`panel game-result${iWon ? " game-result-win" : ""}`}
@@ -838,15 +995,17 @@ function GameScreen({ room, playerId, onLeave, spectator = false }) {
           >
             {gameOver ? (
               <>
-                <p className="game-result-kicker">{iWon ? "You captured the last HQ" : "Game over"}</p>
+                <p className="game-result-kicker">{iWon ? "You're the last one standing" : "Game over"}</p>
                 <h2 id="result-title">{iWon ? "Victory!" : `${winnerSeat.name} wins!`}</h2>
                 <p className="game-result-detail">
-                  {iWon ? "Every other player has lost their HQ." : iLost ? "Your HQ was captured." : "Their army took the last HQ."}
+                  {iWon
+                    ? "Every other player is out of the game."
+                    : mySeat?.resigned ? "You resigned." : iLost ? "Your HQ was captured." : "They're the last one standing."}
                 </p>
               </>
             ) : (
               <>
-                <p className="game-result-kicker">Your HQ was captured</p>
+                <p className="game-result-kicker">{mySeat?.resigned ? "You resigned" : "Your HQ was captured"}</p>
                 <h2 id="result-title">Defeated</h2>
                 <p className="game-result-detail">The others are still fighting. You can stay and watch.</p>
               </>

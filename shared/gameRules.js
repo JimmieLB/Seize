@@ -695,6 +695,35 @@ export function applyCapture(game, unitDefs, unitId) {
   game.lastAction.version = game.version;
 }
 
+// ---- Resigning ----
+// A player can give up at any time (not just on their turn). They are defeated like losing their
+// HQ, except their buildings and flags go neutral. If it was their turn, play moves on.
+
+export function resignError(game, seatIndex) {
+  const seat = game.seats[seatIndex];
+  if (!seat) return "You aren't playing in this game.";
+  if (game.winner) return "The game is over.";
+  if (seat.defeated) return "You're already out of this game.";
+  return null;
+}
+
+export function applyResign(game, seatIndex, isConnected = () => true, unitDefs = []) {
+  const seat = game.seats[seatIndex];
+  defeat(game, seat.owner, 0);
+  seat.resigned = true;
+  game.version += 1;
+  const remaining = game.seats.filter((current) => !current.defeated);
+  game.lastAction = {
+    version: game.version,
+    text: game.winner ? `${seat.name} resigned. ${remaining[0].name} wins the game!` : `${seat.name} resigned.`,
+  };
+  if (!game.winner && game.active === seatIndex) {
+    const text = game.lastAction.text;
+    endTurn(game, isConnected, unitDefs);
+    game.lastAction = { version: game.version, text };
+  }
+}
+
 // ---- Waiting ----
 
 export function waitError(game, unitDefs, seatIndex, unitId) {

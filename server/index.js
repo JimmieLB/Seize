@@ -12,6 +12,7 @@ import {
   applyCapture,
   applyDrop,
   applyMove,
+  applyResign,
   applyWait,
   attackError,
   buyError,
@@ -20,10 +21,12 @@ import {
   dropError,
   endTurn,
   moveError,
+  resignError,
   upgradeGame,
   waitError,
 } from "../shared/gameRules.js";
 import { allowMapCreation, isAdmin, login, requireAdmin } from "./admin.js";
+import { createReplayStore } from "./replays.js";
 import { createStaticHandler } from "./static.js";
 
 const directory = path.dirname(fileURLToPath(import.meta.url));
@@ -47,6 +50,7 @@ let maps = [];
 let units = withDefaults([]);
 let buildings = buildingsWithDefaults([]);
 let saveQueue = Promise.resolve();
+const replays = createReplayStore(dataDirectory);
 
 function hashPassword(password, salt) {
   return scryptSync(password, salt, 32);
@@ -98,6 +102,7 @@ async function closeEmptyRooms(now = Date.now()) {
     }
     if (now - room.emptySince < emptyRoomCloseMs) return true;
     changed = true;
+    if (room.recording) replays.discard(room.id);
     return false;
   });
   if (changed) await persistRooms();
@@ -111,6 +116,7 @@ function normalizeRoom(room) {
   room.gameMap ??= null;
   room.gameUnits ??= null;
   room.game ??= null;
+  room.saveReplay ??= true;
   const players = cleanPlayers(room);
   if (!players.some((player) => player.id === room.hostId)) room.hostId = players[0]?.id ?? null;
   if (room.status === "playing" && (players.length === 0 || !room.game)) {
@@ -120,6 +126,8 @@ function normalizeRoom(room) {
     room.gameUnits = null;
     room.game = null;
     room.gameUndo = null;
+    if (room.recording) replays.discard(room.id);
+    room.recording = false;
   }
   if (room.game) {
     upgradeGame(room.game, room.gameMap);
@@ -129,6 +137,7 @@ function normalizeRoom(room) {
     if (!room.game.winner && !connected(activePlayer)) {
       endTurn(room.game, connected, room.gameUnits);
       clearUndo(room);
+      recordFrame(room);
     }
   }
   if (room.mapId && room.status === "waiting" && !maps.some((map) => map.id === room.mapId)) room.mapId = null;
@@ -157,6 +166,18 @@ function undoLast(room, seatIndex) {
   return null;
 }
 
+// ---- Replays ----
+// room.recording is true while this game is being recorded (the room's "Save replay" option).
+
+function recordFrame(room) {
+  if (!room.recording) return;
+  replays.frame(room);
+  if (room.game.winner) {
+    room.recording = false; // saved once, when the game is won
+    replays.finish(room);
+  }
+}
+
 function roomMap(room) {
   return room.gameMap ?? maps.find((map) => map.id === room.mapId) ?? null;
 }
@@ -172,6 +193,7 @@ function publicRoom(room) {
     createdAt: room.createdAt,
     hostId: room.hostId,
     status: room.status,
+    saveReplay: room.saveReplay,
     map: map ? mapSummary(map) : null,
     players: players.map(({ id, name }) => ({ id, name })),
     playerCount: players.length,
@@ -355,10 +377,37 @@ async function handleRequest(request, response) {
     return send(response, 405, { error: "Method not allowed." });
   }
 
+  if (route.pathname === "/api/replays") {
+    if (request.method !== "GET") return send(response, 405, { error: "Method not allowed." });
+    return send(response, 200, { replays: replays.list(), usedBytes: await replays.usedBytes(), limitBytes: replays.limitBytes });
+  }
+
+  const replayRoute = route.pathname.match(/^\/api\/replays\/([^/]+)$/);
+  if (replayRoute) {
+    const replayId = replayRoute[1];
+    if (request.method === "DELETE") {
+      requireAdmin(request);
+      if (!replays.list().some((entry) => entry.id === replayId)) return send(response, 404, { error: "Replay not found." });
+      await replays.remove(replayId);
+      return send(response, 200, { ok: true });
+    }
+    if (request.method !== "GET") return send(response, 405, { error: "Method not allowed." });
+    const data = await replays.read(replayId);
+    if (!data) return send(response, 404, { error: "Replay not found." });
+    // Stored gzipped; the browser unzips it.
+    response.writeHead(200, {
+      "Content-Type": "application/json; charset=utf-8",
+      "Content-Encoding": "gzip",
+      "Content-Length": data.length,
+      "Cache-Control": "public, max-age=31536000, immutable",
+    });
+    return response.end(data);
+  }
+
   const mapRoute = route.pathname.match(/^\/api\/maps(?:\/([^/]+))?$/);
   if (mapRoute) return handleMapRequest(request, response, mapRoute[1]);
 
-  const roomRoute = route.pathname.match(/^\/api\/rooms(?:\/([^/]+))?(?:\/(join|heartbeat|leave|map|start|units|game|buy|move|attack|capture|wait|drop|end-turn|undo))?$/);
+  const roomRoute = route.pathname.match(/^\/api\/rooms(?:\/([^/]+))?(?:\/(join|heartbeat|leave|map|start|units|game|buy|move|attack|capture|wait|drop|end-turn|undo|resign))?$/);
   if (!roomRoute) return send(response, 404, { error: "Not found." });
 
   const [, roomId, action] = roomRoute;
@@ -397,6 +446,7 @@ async function handleRequest(request, response) {
       status: "waiting",
       mapId: null,
       gameMap: null,
+      saveReplay: body.saveReplay !== false,
       players: [{ id: playerId, name: playerName, lastSeen: Date.now() }],
     };
     rooms.unshift(room);
@@ -484,9 +534,27 @@ async function handleRequest(request, response) {
       room.gameUnits = structuredClone(units);
       room.game = createGame(room.gameMap, cleanPlayers(room), incomeTable(buildings));
       room.startedAt = new Date().toISOString();
+      room.recording = room.saveReplay;
+      if (room.recording) replays.start(room);
     }
     await persistRooms();
     return send(response, 200, { room: publicRoom(room) });
+  }
+
+  if (action === "resign") {
+    if (!player) return send(response, 404, { error: "You are no longer in this room." });
+    normalizeRoom(room);
+    if (!room.game) return send(response, 409, { error: "This game hasn't started." });
+    player.lastSeen = Date.now();
+    const seatIndex = room.game.seats.findIndex((seat) => seat.playerId === playerId);
+    const error = resignError(room.game, seatIndex);
+    if (error) return send(response, 400, { error });
+    const connected = (id) => cleanPlayers(room).some((current) => current.id === id);
+    applyResign(room.game, seatIndex, connected, room.gameUnits);
+    clearUndo(room);
+    recordFrame(room);
+    await persistRooms();
+    return send(response, 200, { game: room.game });
   }
 
   if (["buy", "move", "attack", "capture", "wait", "drop", "end-turn", "undo"].includes(action)) {
@@ -502,6 +570,7 @@ async function handleRequest(request, response) {
     if (action === "undo") {
       const error = undoLast(room, seatIndex);
       if (error) return send(response, 400, { error });
+      if (room.recording) replays.undo(room);
       await persistRooms();
       return send(response, 200, { game: room.game });
     }
@@ -547,6 +616,7 @@ async function handleRequest(request, response) {
       room.gameUndo = { seatIndex, snapshot: before };
       room.game.undoSeat = seatIndex;
     }
+    recordFrame(room);
     await persistRooms();
     return send(response, 200, { game: room.game });
   }
@@ -577,6 +647,7 @@ rooms = await readJsonArray(roomsFile);
 maps = await readJsonArray(mapsFile, { seed: true });
 units = withDefaults(await readJsonArray(unitsFile, { seed: true }));
 buildings = buildingsWithDefaults(await readJsonArray(buildingsFile, { seed: true }));
+await replays.load();
 
 setInterval(() => closeEmptyRooms().catch((error) => console.error(error)), roomSweepMs);
 
@@ -589,6 +660,6 @@ for (const signal of ["SIGTERM", "SIGINT"]) {
   process.once(signal, () => {
     console.log(`${signal} received, shutting down...`);
     server.close();
-    saveQueue.catch(() => {}).finally(() => process.exit(0));
+    Promise.allSettled([saveQueue, replays.flush()]).finally(() => process.exit(0));
   });
 }

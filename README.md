@@ -107,7 +107,7 @@ The password comes from the `ADMIN_PASSWORD` environment variable; if it isn't s
 
 On first start with an empty volume, maps, units and buildings are seeded from `server/seed/` (a copy of the local data at the time). After that the volume is the source of truth; update `server/seed/` only if you want new deployments to start from different data.
 
-Environment variables: `PORT`, `ADMIN_PASSWORD`, `SEIZE_DATA_DIR` (overrides the data location), and for local development `SEIZE_API_URL` (where Vite proxies `/api`).
+Environment variables: `PORT`, `ADMIN_PASSWORD`, `SEIZE_DATA_DIR` (overrides the data location), `REPLAY_STORAGE_LIMIT_MB` (total space for replays, default 200), and for local development `SEIZE_API_URL` (where Vite proxies `/api`).
 
 ## Winning
 
@@ -157,3 +157,18 @@ Ready-made examples live in `examples/maps/` — open a file, copy its contents,
 | `island-hop.json` | 2 | 22×14 | Two home islands and a rich middle island, each linked by one bridge; ports and airports matter |
 | `four-corners.json` | 4 | 20×20 | Four bases around a central lake, a ring road with blockades, flags in the middle |
 | `mountain-pass.json` | 2 | 18×12 | A mountain wall with two blockaded passes; infantry can climb straight over |
+
+## Replays
+
+When creating a room, **Save replay when the game ends** is ticked by default. While the game runs, the server appends every game state to `recordings/<room id>.ndjson` in the data folder (undo removes the undone state). When someone wins, the recording is gzipped into `replays/<id>.json.gz` and listed in `replays.json`. Games that are abandoned, or rooms with the option off, save nothing.
+
+The replays folder is capped at `REPLAY_STORAGE_LIMIT_MB` (default 200 MB). Before a new replay is written, the oldest replays are deleted until it fits. A single replay bigger than the whole limit is skipped.
+
+**Replays** in the lobby lists saved games (newest first) with the space used. **Watch** plays one back: play/pause (Space), step back/forward (← →), jump to start/end, drag the slider, and 0.5x–4x speed. Each step says what happened. Admins can delete replays.
+
+
+The home screen plays a random saved replay behind the lobby (one change every 1.5 seconds, silent, no input), then picks another one. With no replays it shows the plain background.
+
+## Resigning
+
+**Resign** (top left, in game) gives up at any time, after a confirmation. Your units are removed, your buildings and flags become neutral, and if it was your turn play moves on. If only one player is left, they win (and the replay is saved).

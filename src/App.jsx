@@ -8,6 +8,7 @@ const GameScreen = lazy(() => import("./GameScreen.jsx"));
 const MapEditor = lazy(() => import("./MapEditor.jsx"));
 const UnitEditor = lazy(() => import("./UnitEditor.jsx"));
 const Tutorial = lazy(() => import("./Tutorial.jsx"));
+const Replays = lazy(() => import("./Replays.jsx"));
 
 const playerIdKey = "seize-player-id";
 const playerNameKey = "seize-player-name";
@@ -38,6 +39,49 @@ function getPlayerId() {
   return id;
 }
 
+/**
+ * Home screen background: plays a random saved replay (one change every 1.5 s), then another.
+ * Shows nothing when there are no replays.
+ */
+function LobbyBackground() {
+  const [replay, setReplay] = useState(null);
+  const lastIdRef = useRef(null);
+  const runRef = useRef(0); // remounts the view each time, even for the same replay
+  const next = useCallback(async () => {
+    try {
+      const { replays } = await api("/api/replays");
+      if (replays.length === 0) return setReplay(null);
+      // Avoid showing the same replay twice in a row when there's a choice.
+      const choices = replays.length > 1 ? replays.filter((item) => item.id !== lastIdRef.current) : replays;
+      const pick = choices[Math.floor(Math.random() * choices.length)];
+      const data = await api(`/api/replays/${pick.id}`);
+      if (data.frames?.length > 0) {
+        lastIdRef.current = pick.id;
+        runRef.current += 1;
+        setReplay({ ...data, run: runRef.current });
+      }
+    } catch {
+      setReplay(null); // the background is decoration: fail quietly
+    }
+  }, []);
+  useEffect(() => {
+    next();
+  }, [next]);
+  if (!replay) return null;
+  return (
+    <Suspense fallback={null}>
+      <GameScreen
+        key={replay.run}
+        room={{ id: replay.id, name: replay.roomName }}
+        playerId=""
+        onLeave={next}
+        replay={replay}
+        ambient
+      />
+    </Suspense>
+  );
+}
+
 function App() {
   const [rooms, setRooms] = useState([]);
   const [joinedRoom, setJoinedRoom] = useState(null);
@@ -48,6 +92,7 @@ function App() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [screen, setScreen] = useState("lobby");
+  const [replay, setReplay] = useState(null); // loaded replay being watched
   const [isAdmin, setIsAdmin] = useState(false);
   const [adminDialog, setAdminDialog] = useState(false);
   const [adminError, setAdminError] = useState("");
@@ -206,6 +251,7 @@ function App() {
           name: formData.get("roomName"),
           maxPlayers: Number(formData.get("maxPlayers")),
           password: formData.get("roomPassword"),
+          saveReplay: formData.get("saveReplay") === "on",
           playerId: getPlayerId(),
           playerName: playerName.trim(),
         }),
@@ -329,6 +375,24 @@ function App() {
     );
   }
 
+  if (!joinedRoom && screen === "replays") {
+    return (
+      <Suspense fallback={<div className="lobby">Loading...</div>}>
+        {replay ? (
+          <GameScreen
+            key={replay.id}
+            room={{ id: replay.id, name: replay.roomName }}
+            playerId={getPlayerId()}
+            onLeave={() => setReplay(null)}
+            replay={replay}
+          />
+        ) : (
+          <Replays onExit={() => setScreen("lobby")} onWatch={setReplay} isAdmin={isAdmin} />
+        )}
+      </Suspense>
+    );
+  }
+
   if (!joinedRoom && screen === "tutorial") {
     return (
       <Suspense fallback={<div className="lobby">Loading...</div>}>
@@ -358,7 +422,9 @@ function App() {
   }
 
   return (
-    <main className="lobby">
+    <>
+    {!watchingRoom && <LobbyBackground />}
+    <main className="lobby lobby-over-replay">
       <h1 className="logo">seize<span>.io</span></h1>
 
       <section className="panel">
@@ -393,7 +459,10 @@ function App() {
           <button className="btn btn-blue" onClick={() => { setError(""); setScreen("editor"); }}>Map editor</button>
           <button className="btn btn-blue" onClick={() => { setError(""); setScreen("units"); }}>Units</button>
         </div>
-        <button className="btn btn-gray btn-wide" onClick={() => { setError(""); setScreen("tutorial"); }}>How to play</button>
+        <div className="btn-row">
+          <button className="btn btn-gray" onClick={() => { setError(""); setScreen("tutorial"); }}>How to play</button>
+          <button className="btn btn-gray" onClick={() => { setError(""); setScreen("replays"); }}>Replays</button>
+        </div>
 
         {error && !dialog && <div className="error" role="alert">{error}</div>}
 
@@ -488,6 +557,10 @@ function App() {
                     {PLAYER_LIMITS.map((number) => <option key={number} value={number}>{number} players</option>)}
                   </select>
                   <input name="roomPassword" type="password" placeholder="Password (optional)" maxLength="64" {...noAutofill} autoComplete="new-password" />
+                  <label className="modal-check">
+                    <input type="checkbox" name="saveReplay" defaultChecked />
+                    Save replay when the game ends
+                  </label>
                 </>
               ) : (
                 <input name="roomPassword" type="password" placeholder="Room password" required autoFocus {...noAutofill} autoComplete="new-password" />
@@ -502,6 +575,7 @@ function App() {
         </div>
       )}
     </main>
+    </>
   );
 }
 

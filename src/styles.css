@@ -926,3 +926,69 @@ button:disabled { cursor: not-allowed; opacity: .55; filter: none; }
 .unit-tip-stats em { color: var(--green); font-style: normal; }
 .unit-tip-traits { display: flex; flex-wrap: wrap; gap: 4px; }
 .unit-tip-note { margin: 0; color: var(--muted); }
+
+/* Create room: replay option */
+.modal-check { display: flex; align-items: center; gap: 8px; color: #444; font-size: 15px; cursor: pointer; }
+.modal-check input { width: 18px; height: 18px; margin: 0; accent-color: var(--green); }
+
+/* Replays page */
+.replay-list {
+  width: calc(100% - 32px);
+  max-width: 820px;
+  margin: 16px auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.replays-error { width: calc(100% - 32px); max-width: 820px; margin: 16px auto 0; }
+.replay-list .room-empty { width: auto; }
+.replay-card { width: auto; flex-direction: row; align-items: center; gap: 16px; padding: 14px 18px; }
+.replay-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.replay-main strong { font-size: 17px; overflow-wrap: anywhere; }
+.replay-meta { color: var(--muted); font-size: 13px; }
+.replay-players { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 14px; }
+.replay-players > span { display: inline-flex; align-items: center; gap: 6px; }
+.replay-players i { width: 10px; height: 10px; border-radius: 50%; }
+.replay-winner { font-weight: 700; }
+.replay-actions { display: flex; flex-direction: column; gap: 6px; }
+@media (max-width: 560px) {
+  .replay-card { flex-direction: column; align-items: stretch; }
+  .replay-actions { flex-direction: row; }
+}
+
+/* Replay playback controls */
+.replay-bar {
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  width: min(calc(100% - 32px), 560px);
+  gap: 8px;
+  padding: 12px 14px;
+  transform: translateX(-50%);
+}
+.replay-buttons { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.replay-buttons .btn { min-width: 40px; padding-inline: 10px; }
+.replay-play { min-width: 76px !important; }
+.replay-buttons select {
+  margin-left: auto;
+  padding: 5px 6px;
+  border: 2px solid #ccd3d8;
+  border-radius: 6px;
+  background: #fff;
+  font: inherit;
+  font-weight: 700;
+}
+.replay-bar input[type="range"] { width: 100%; margin: 0; accent-color: var(--blue); }
+.replay-status { display: flex; gap: 12px; color: var(--muted); font-size: 13px; }
+.replay-status span:first-child { flex: 0 0 auto; font-weight: 700; }
+.replay-action { overflow: hidden; color: #333; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Home screen: a random replay plays behind the lobby */
+.game-ambient { z-index: 0; pointer-events: none; }
+.game-ambient::after { content: ""; position: absolute; inset: 0; background: rgb(238 242 244 / 0.35); }
+.lobby-over-replay { position: relative; z-index: 1; }
+.lobby-over-replay .logo { text-shadow: 0 3px 0 rgb(255 255 255 / 0.8), 0 0 18px rgb(255 255 255 / 0.9); }
+.lobby-over-replay .admin-link, .lobby-over-replay > a, .lobby-over-replay > button { text-shadow: 0 0 6px #fff; }
+
+/* In-game resign */
+.game-resign { padding: 6px 12px; }
