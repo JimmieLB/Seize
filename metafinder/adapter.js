@@ -19,6 +19,13 @@
 //   units            stat overrides, e.g. {"tank": {"price": 8000, "attack": 7}}
 //   income           cash-per-day overrides, e.g. {"flag": 1000}
 //   data_dir         where units/buildings/maps come from (default "server/seed")
+//
+// AI scoring (only changes how the search values positions, never the rules):
+//   objective_values what owning each building kind is worth on top of its income, in cash;
+//                    "hq" is what a finished HQ capture is worth (partial captures count pro rata),
+//                    e.g. {"barracks": 6000, "city": 1000}. Defaults: DEFAULT_OBJECTIVE_VALUES below.
+//   unit_values      what each unit type is worth at full health, in cash (default: its price),
+//                    e.g. {"infantry": 2500}. Used by heuristicValue() and the playout attack choice.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -26,10 +33,10 @@ import { fileURLToPath } from "node:url";
 import {
   MAX_HP, PRODUCTION, applyAttack, applyBuy, applyCapture, applyDrop, applyMove, applyWait, attackBonus,
   attackTargets, canBoard, captureError, cargoOf, createGame, damage, dropTiles, endTurn, incomeFor, isBridge,
-  layerOf, moveCost, previewAttack, propertyAt, reachable, stopError, unitsAt,
+  layerOf, moveCost, previewAttack, propertyAt, propertyIncome, reachable, stopError, unitsAt,
 } from "../shared/gameRules.js";
 import { withDefaults as unitsWithDefaults } from "../shared/unitFormat.js";
-import { incomeTable, withDefaults as buildingsWithDefaults } from "../shared/buildingFormat.js";
+import { BUILDING_IDS, incomeTable, withDefaults as buildingsWithDefaults } from "../shared/buildingFormat.js";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SEED_DIR = path.join(REPO_ROOT, "server", "seed");
@@ -143,6 +150,30 @@ function distanceField(ctx, def, x, y) {
 }
 
 // ---------------------------------------------------------------------------- state
+/**
+ * Cash value of owning a building, added to 4 days of its income. Buildings whose worth isn't in
+ * their income (barracks/tower attack bonuses, flags' income multiplier, production) get more.
+ * "hq" is the worth of a completed HQ capture, scaled by capture progress (owning your own HQ
+ * isn't scored: every player has one).
+ */
+const DEFAULT_OBJECTIVE_VALUES = {
+  hq: 30000, city: 2000, factory: 6000, airport: 6000, port: 6000, barracks: 4000, tower: 4000, silo: 1000, flag: 3000,
+};
+const INCOME_DAYS = 4; // days of income a property's cash flow is worth
+
+function valueTable(name, input, known, defaults = {}) {
+  if (input == null) return { ...defaults };
+  if (typeof input !== "object" || Array.isArray(input)) throw new Error(`${name} must be an object like {"${known[0]}": 5000}`);
+  const out = { ...defaults };
+  for (const [k, v] of Object.entries(input)) {
+    if (!known.includes(k)) throw new Error(`${name}: unknown key ${JSON.stringify(k)}. Known: ${known.join(", ")}`);
+    const n = Number(v);
+    if (!Number.isFinite(n) || n < 0) throw new Error(`${name}.${k} must be a number of at least 0`);
+    out[k] = n;
+  }
+  return out;
+}
+
 const WAIT = "wait";
 const HOLD = "hold";
 const CAPTURE = "capture";
@@ -172,6 +203,11 @@ class SeizeState {
   // ------------------------------------------------------------------ helpers
   defOf(unit) {
     return this.ctx.defs.get(unit.unitId);
+  }
+
+  /** What a unit of this type is worth to the AI at full health. */
+  unitValue(def) {
+    return this.settings.unitValues[def.id] ?? def.price;
   }
 
   unit(id) {
@@ -384,18 +420,29 @@ class SeizeState {
   }
 
   // ------------------------------------------------------------------ optional
+  /** What owning this property is worth beyond the income it adds (see DEFAULT_OBJECTIVE_VALUES). */
+  objectiveValue(kind) {
+    return this.settings.objectiveValues[kind] ?? 0;
+  }
+
   /**
-   * Each seat's share of total strength: funds + unit value (price × health) + 4 days of income
-   * + capture progress on other players' properties.
+   * Each seat's share of total strength: funds + 4 days of income + unit value (unitValue × health)
+   * + objective value of owned properties + capture progress (pro rata of what the capture would add).
    */
   heuristicValue() {
     const { game } = this;
     const n = game.seats.length;
-    const strength = game.seats.map((s) => (s.defeated ? 0 : s.funds + 4 * incomeFor(game, s.owner)));
-    for (const u of game.units) strength[u.owner - 1] += (this.defOf(u).price * u.hp) / MAX_HP;
+    const strength = game.seats.map((s) => (s.defeated ? 0 : s.funds + INCOME_DAYS * incomeFor(game, s.owner)));
+    for (const u of game.units) strength[u.owner - 1] += (this.unitValue(this.defOf(u)) * u.hp) / MAX_HP;
     for (const p of game.properties) {
+      if (p.owner > 0 && p.kind !== "hq") strength[p.owner - 1] += this.objectiveValue(p.kind);
       const capturer = p.capture && this.unit(p.capture.unitId);
-      if (capturer) strength[capturer.owner - 1] += ((p.kind === "hq" ? 30000 : 3000) * p.capture.progress) / 100;
+      if (capturer) {
+        const worth = p.kind === "hq"
+          ? this.objectiveValue("hq")
+          : this.objectiveValue(p.kind) + INCOME_DAYS * propertyIncome(game, p.kind);
+        strength[capturer.owner - 1] += (worth * p.capture.progress) / 100;
+      }
     }
     game.seats.forEach((s, i) => {
       if (s.defeated) strength[i] = 0;
@@ -491,6 +538,8 @@ class SeizeGame {
     const settings = {
       maxTurns: Number.parseInt(config.max_turns ?? 30, 10),
       moveCandidates: Number.parseInt(config.move_candidates ?? 8, 10),
+      objectiveValues: valueTable("objective_values", config.objective_values, BUILDING_IDS, DEFAULT_OBJECTIVE_VALUES),
+      unitValues: valueTable("unit_values", config.unit_values, ctx.unitDefs.map((d) => d.id)),
     };
     return new SeizeState(ctx, settings, createGame(ctx.map, seats, ctx.income));
   }
@@ -528,7 +577,7 @@ class SeizeGame {
         if (a.startsWith("attack:")) {
           const target = state.unit(Number(a.slice(7)));
           const { dealt, counter } = previewAttack(game, ctx.unitDefs, unit, target.x, target.y, target.id);
-          const value = dealt * state.defOf(target).price - counter * d.price;
+          const value = dealt * state.unitValue(state.defOf(target)) - counter * state.unitValue(d);
           if (value > bestValue) {
             best = a;
             bestValue = value;

@@ -181,4 +181,11 @@ A turn is split into small decisions (select a unit → move → act; buy; end t
 
 Config (in `metafinder.json` or MetaFinder's config box): `map` (name or id), `max_turns` (games still running after this many days are scored by army value, funds and income; default 30), `move_candidates` (default 8; 0 = every tile), `units` (stat overrides such as `{"tank": {"price": 8000}}`) and `income` (cash-per-day overrides). Maps, units and income come from `server/seed/`, loaded with the same defaults as the server. Use `metafinder/adapter.js:GAME3` or `metafinder/adapter.js:GAME4` as the entry for 3- or 4-player maps.
 
+How the AI values positions. These options change only its judgement, never the rules. A search is cut short after about one player-turn, and the position is then scored as each player's share of: funds + 4 days of income + units + buildings owned + capture progress. Capturing the enemy HQ is a real win, so everything else is a stepping stone towards it.
+
+- `objective_values`: cash worth of owning each building kind, on top of its income. Defaults: `hq` 30000 (a finished HQ capture; partial captures count pro rata), `factory`/`airport`/`port` 6000, `barracks`/`tower` 4000, `flag` 3000, `city`/`silo` 2000. Example: `{"barracks": 8000, "city": 1000}`.
+- `unit_values`: cash worth of each unit type at full health (default: its price), e.g. `{"infantry": 2500}`. Unlike `units`, this doesn't change the unit's actual price.
+
+Keep building values within about 1–3× the price of the cheapest unit that can capture, or the AI will throw units away for captures it can't hold. To check the effect, compare runs in MetaFinder: look at the `captured · kind=…` events, the pick rates of `capture …` actions, and the result against random players.
+
 Not modelled: undo, resigning and disconnects. Games are long, so use small search settings in MetaFinder (about 100 iterations per move, 2–6 games, `max_turns` 12–20) or raise `METAFINDER_JOB_TIMEOUT`.
