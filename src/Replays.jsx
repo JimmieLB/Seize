@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "./api.js";
 import { PLAYERS } from "./map/mapModel.js";
 
@@ -7,6 +7,7 @@ const formatDate = (iso) =>
   new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 
 function duration(start, end) {
+  if (!start || !end) return "";
   const minutes = Math.round((new Date(end) - new Date(start)) / 60000);
   if (!Number.isFinite(minutes)) return "";
   return minutes < 60 ? `${Math.max(1, minutes)} min` : `${Math.floor(minutes / 60)} h ${minutes % 60} min`;
@@ -17,6 +18,9 @@ function Replays({ onExit, onWatch, isAdmin }) {
   const [data, setData] = useState(null); // { replays, usedBytes, limitBytes }
   const [error, setError] = useState("");
   const [loadingId, setLoadingId] = useState(null);
+  const [uploading, setUploading] = useState(false);
+  const [notice, setNotice] = useState("");
+  const fileRef = useRef(null);
 
   const load = () =>
     api("/api/replays")
@@ -34,6 +38,33 @@ function Replays({ onExit, onWatch, isAdmin }) {
     } catch (requestError) {
       setError(requestError.message);
       setLoadingId(null);
+    }
+  }
+
+  /** Uploads a replay file; MetaFinder result files are converted by the server. */
+  async function upload(event) {
+    const file = event.target.files?.[0];
+    event.target.value = ""; // so picking the same file again still uploads
+    if (!file) return;
+    setUploading(true);
+    setError("");
+    setNotice("");
+    try {
+      const { replay, format } = await api("/api/replays", {
+        method: "POST",
+        headers: { "Content-Type": "application/octet-stream" },
+        body: await file.arrayBuffer(),
+      });
+      setNotice(
+        format === "metafinder"
+          ? `Converted "${file.name}" from MetaFinder format and saved it.${replay.note ? ` ${replay.note}` : ""}`
+          : `Saved "${file.name}".`,
+      );
+      load();
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setUploading(false);
     }
   }
 
@@ -57,8 +88,22 @@ function Replays({ onExit, onWatch, isAdmin }) {
             {formatSize(data.usedBytes)} of {formatSize(data.limitBytes)} used
           </span>
         )}
+        {isAdmin && (
+          <>
+            <input ref={fileRef} type="file" accept=".json,.gz,application/json,application/gzip" hidden onChange={upload} />
+            <button
+              className="btn btn-blue btn-small"
+              disabled={uploading}
+              onClick={() => fileRef.current?.click()}
+              title="Upload a Seize replay or a MetaFinder result file (converted automatically)"
+            >
+              {uploading ? "Uploading..." : "Upload replay"}
+            </button>
+          </>
+        )}
       </header>
       {error && <div className="error replays-error" role="alert">{error}</div>}
+      {notice && <div className="panel replays-error" role="status">{notice}</div>}
       <div className="replay-list">
         {!data ? (
           <div className="room-empty">Loading...</div>
@@ -70,8 +115,15 @@ function Replays({ onExit, onWatch, isAdmin }) {
               <div className="replay-main">
                 <strong>{summary.roomName}</strong>
                 <span className="replay-meta">
-                  {summary.mapName} · {summary.width}×{summary.height} · {summary.turns} turns · {duration(summary.startedAt, summary.endedAt)}
+                  {[
+                    summary.mapName,
+                    `${summary.width}×${summary.height}`,
+                    `${summary.turns} turns`,
+                    duration(summary.startedAt, summary.endedAt),
+                    summary.source === "metafinder" && "from MetaFinder",
+                  ].filter(Boolean).join(" · ")}
                 </span>
+                {summary.note && <span className="replay-meta">{summary.note}</span>}
                 <span className="replay-players">
                   {summary.players.map((player) => (
                     <span key={player.owner} className={summary.winner?.owner === player.owner ? "replay-winner" : ""}>
@@ -81,7 +133,9 @@ function Replays({ onExit, onWatch, isAdmin }) {
                     </span>
                   ))}
                 </span>
-                <span className="replay-meta">{formatDate(summary.endedAt)} · {formatSize(summary.bytes)}</span>
+                <span className="replay-meta">
+                  {summary.endedAt ? `${formatDate(summary.endedAt)} · ` : ""}{formatSize(summary.bytes)}
+                </span>
               </div>
               <div className="replay-actions">
                 <button className="btn btn-green btn-small" disabled={Boolean(loadingId)} onClick={() => watch(summary)}>

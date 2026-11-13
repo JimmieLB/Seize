@@ -26,6 +26,7 @@ import {
   waitError,
 } from "../shared/gameRules.js";
 import { allowMapCreation, isAdmin, login, requireAdmin } from "./admin.js";
+import { importReplay } from "./replayImport.js";
 import { createReplayStore } from "./replays.js";
 import { createStaticHandler } from "./static.js";
 
@@ -45,6 +46,7 @@ const emptyRoomCloseMs = 15_000; // rooms with nobody connected for this long ar
 const roomSweepMs = 2_000;
 const maxRequestBytes = 16_384;
 const maxMapRequestBytes = 262_144;
+const maxReplayUploadBytes = 32 * 1024 * 1024;
 let rooms = [];
 let maps = [];
 let units = withDefaults([]);
@@ -236,6 +238,18 @@ async function readJsonArray(file, { seed = false } = {}) {
   return [];
 }
 
+/** The raw request body as a Buffer (used for file uploads). */
+async function readBytes(request, limit) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of request) {
+    size += chunk.length;
+    if (size > limit) throw Object.assign(new Error("That file is too large."), { status: 413 });
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+}
+
 async function readJson(request, limit = maxRequestBytes) {
   let body = "";
   for await (const chunk of request) {
@@ -378,6 +392,14 @@ async function handleRequest(request, response) {
   }
 
   if (route.pathname === "/api/replays") {
+    if (request.method === "POST") {
+      // Upload a replay file: Seize's own format or a MetaFinder result (converted). Admins only, since
+      // saving can push the oldest replays out of storage.
+      requireAdmin(request);
+      const { format, replay } = await importReplay(await readBytes(request, maxReplayUploadBytes), { maps, dataDirectory });
+      const summary = await replays.save(replay);
+      return send(response, 201, { replay: summary, format });
+    }
     if (request.method !== "GET") return send(response, 405, { error: "Method not allowed." });
     return send(response, 200, { replays: replays.list(), usedBytes: await replays.usedBytes(), limitBytes: replays.limitBytes });
   }

@@ -67,6 +67,39 @@ export function createReplayStore(dataDirectory, { limitBytes } = {}) {
     if (removed.size) index = index.filter((entry) => !removed.has(entry.id));
   }
 
+  /**
+   * Saves a replay ({ roomName, startedAt, endedAt, map, unitDefs, frames, source?, note? }) and lists
+   * it. Returns its summary, or null if it's bigger than the whole storage limit.
+   */
+  async function writeReplay({ roomName, startedAt, endedAt, map, unitDefs, frames, source, note }) {
+    const last = frames[frames.length - 1];
+    const winner = last.seats.find((seat) => seat.owner === last.winner);
+    const summary = {
+      id: `${Date.now().toString(36)}${randomBytes(3).toString("hex")}`,
+      roomName,
+      mapName: map.name,
+      width: map.width,
+      height: map.height,
+      players: last.seats.map(({ name, owner }) => ({ name, owner })),
+      winner: winner ? { name: winner.name, owner: winner.owner } : null,
+      turns: last.turn,
+      frames: frames.length,
+      startedAt,
+      endedAt,
+      ...(source ? { source } : {}),
+      ...(note ? { note } : {}),
+    };
+    const data = await gzip(JSON.stringify({ ...summary, map, unitDefs, frames }));
+    summary.bytes = data.length;
+    if (data.length > limit) return null;
+    await makeRoom(data.length);
+    await writeFile(replayFile(summary.id), data);
+    index.unshift(summary);
+    await writeIndex();
+    console.log(`Saved replay ${summary.id} (${data.length} bytes, ${frames.length} states)`);
+    return summary;
+  }
+
   return {
     limitBytes: limit,
 
@@ -172,32 +205,30 @@ export function createReplayStore(dataDirectory, { limitBytes } = {}) {
         await unlink(recordingFile(room.id)).catch(() => {});
         if (!setup || frames.length === 0) return;
 
-        const last = frames[frames.length - 1];
-        const winner = last.seats.find((seat) => seat.owner === last.winner);
-        const summary = {
-          id: `${Date.now().toString(36)}${randomBytes(3).toString("hex")}`,
+        const summary = await writeReplay({
           roomName: setup.roomName,
-          mapName: setup.map.name,
-          width: setup.map.width,
-          height: setup.map.height,
-          players: last.seats.map(({ name, owner }) => ({ name, owner })),
-          winner: winner ? { name: winner.name, owner: winner.owner } : null,
-          turns: last.turn,
-          frames: frames.length,
           startedAt: setup.startedAt,
           endedAt: new Date().toISOString(),
-        };
-        const data = await gzip(JSON.stringify({ ...summary, map: setup.map, unitDefs: setup.unitDefs, frames }));
-        summary.bytes = data.length;
-        if (data.length > limit) {
-          console.warn(`Replay ${summary.id} is ${data.length} bytes, bigger than the whole replay limit; not saved.`);
-          return;
-        }
-        await makeRoom(data.length);
-        await writeFile(replayFile(summary.id), data);
-        index.unshift(summary);
-        await writeIndex();
-        console.log(`Saved replay ${summary.id} (${data.length} bytes, ${frames.length} states)`);
+          map: setup.map,
+          unitDefs: setup.unitDefs,
+          frames,
+        });
+        if (!summary) console.warn(`Replay of room ${room.id} is bigger than the whole replay limit; not saved.`);
+      });
+    },
+
+    /** Saves an uploaded replay (see writeReplay). Resolves to its summary; rejects (413) if it can't fit. */
+    save(replay) {
+      return new Promise((resolve, reject) => {
+        enqueue(async () => {
+          try {
+            const summary = await writeReplay(replay);
+            if (summary) resolve(summary);
+            else reject(Object.assign(new Error("That replay is bigger than the whole replay storage limit."), { status: 413 }));
+          } catch (error) {
+            reject(error);
+          }
+        });
       });
     },
 
