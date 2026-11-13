@@ -1,4 +1,5 @@
 {
-  "entry": "seize_py.adapter:GAME",
+  "runtime": "node",
+  "entry": "metafinder/adapter.js:GAME",
   "config": { "map": "Test", "max_turns": 30, "move_candidates": 8 }
 }

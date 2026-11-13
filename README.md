@@ -175,12 +175,10 @@ The home screen plays a random saved replay behind the lobby (one change every 1
 
 ## AI analysis (MetaFinder)
 
-`seize_py/` is a headless Python port of `shared/gameRules.js`, so MetaFinder can play the game with Monte Carlo Tree Search and report the best openings, unit pick rates and seat balance. `metafinder.json` at the repo root points MetaFinder at it; paste the repo link (or local folder) into MetaFinder.
+`metafinder/adapter.js` is a Node.js MetaFinder module, so MetaFinder can play the game with Monte Carlo Tree Search and report the best openings, unit pick rates and seat balance. It runs the real rules in `shared/gameRules.js` (there is no port to keep in sync) and needs no `npm install`: it only imports `shared/` and Node built-ins. `metafinder.json` at the repo root points MetaFinder at it (`"runtime": "node"`); paste the repo link (or local folder) into MetaFinder. The MetaFinder host needs Node 20+.
 
-- `seize_py/rules.py`: the rules, function for function. **The JS file is still the source of truth: when you change `shared/gameRules.js`, make the same change here.**
-- `seize_py/adapter.py`: the MetaFinder module. A turn is split into small decisions (select a unit → move → act; buy; end turn), and move destinations are narrowed to captures, attacks, boarding and the 8 tiles closest to an objective.
-- `seize_py/check_parity.py`: plays games in Python, replays them through `gameRules.js` with Node and compares the full state after every step. Run `python seize_py/check_parity.py` after any rules change.
+A turn is split into small decisions (select a unit → move → act; buy; end turn), and move destinations are narrowed to captures, attacks, boarding and the 8 tiles closest to an objective. Actions are strings such as `select:3`, `move:4:7`, `attack:12` and `buy:11:3:infantry`.
 
-Config (in `metafinder.json` or MetaFinder's config box): `map` (name or id), `max_turns` (games still running after this many days are scored by army value, funds and income; default 30), `move_candidates` (default 8; 0 = every tile), `units` (stat overrides such as `{"tank": {"price": 8000}}`) and `income` (cash-per-day overrides). Maps, units and income come from `server/seed/`. Use `seize_py.adapter:GAME4` as the entry for 4-player maps.
+Config (in `metafinder.json` or MetaFinder's config box): `map` (name or id), `max_turns` (games still running after this many days are scored by army value, funds and income; default 30), `move_candidates` (default 8; 0 = every tile), `units` (stat overrides such as `{"tank": {"price": 8000}}`) and `income` (cash-per-day overrides). Maps, units and income come from `server/seed/`, loaded with the same defaults as the server. Use `metafinder/adapter.js:GAME3` or `metafinder/adapter.js:GAME4` as the entry for 3- or 4-player maps.
 
 Not modelled: undo, resigning and disconnects. Games are long, so use small search settings in MetaFinder (about 100 iterations per move, 2–6 games, `max_turns` 12–20) or raise `METAFINDER_JOB_TIMEOUT`.
