@@ -172,3 +172,15 @@ The home screen plays a random saved replay behind the lobby (one change every 1
 ## Resigning
 
 **Resign** (top left, in game) gives up at any time, after a confirmation. Your units are removed, your buildings and flags become neutral, and if it was your turn play moves on. If only one player is left, they win (and the replay is saved).
+
+## AI analysis (MetaFinder)
+
+`seize_py/` is a headless Python port of `shared/gameRules.js`, so MetaFinder can play the game with Monte Carlo Tree Search and report the best openings, unit pick rates and seat balance. `metafinder.json` at the repo root points MetaFinder at it; paste the repo link (or local folder) into MetaFinder.
+
+- `seize_py/rules.py`: the rules, function for function. **The JS file is still the source of truth: when you change `shared/gameRules.js`, make the same change here.**
+- `seize_py/adapter.py`: the MetaFinder module. A turn is split into small decisions (select a unit → move → act; buy; end turn), and move destinations are narrowed to captures, attacks, boarding and the 8 tiles closest to an objective.
+- `seize_py/check_parity.py`: plays games in Python, replays them through `gameRules.js` with Node and compares the full state after every step. Run `python seize_py/check_parity.py` after any rules change.
+
+Config (in `metafinder.json` or MetaFinder's config box): `map` (name or id), `max_turns` (games still running after this many days are scored by army value, funds and income; default 30), `move_candidates` (default 8; 0 = every tile), `units` (stat overrides such as `{"tank": {"price": 8000}}`) and `income` (cash-per-day overrides). Maps, units and income come from `server/seed/`. Use `seize_py.adapter:GAME4` as the entry for 4-player maps.
+
+Not modelled: undo, resigning and disconnects. Games are long, so use small search settings in MetaFinder (about 100 iterations per move, 2–6 games, `max_turns` 12–20) or raise `METAFINDER_JOB_TIMEOUT`.
