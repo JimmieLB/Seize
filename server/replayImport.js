@@ -2,6 +2,8 @@
 //
 // Two formats are accepted, as plain JSON or gzipped:
 //   original    what the server saves ({ map, unitDefs, frames: [game state, ...], ...summary })
+//   metafinder-replay  a MetaFinder single-game replay ({ format: "metafinder-replay/1", referee_config, initial, moves }).
+//               Every move carries a full state snapshot, so frames are built straight from those.
 //   metafinder  a MetaFinder result file ({ type: "result", game: { config }, self_play: { sample_game } }).
 //               It only stores the sample game's moves as action labels ("select Infantry#1",
 //               "move to 3,5", ...), so they are played again through metafinder/adapter.js (the real
@@ -22,6 +24,7 @@ const isObject = (value) => Boolean(value) && typeof value === "object" && !Arra
 /** "original", "metafinder" or null. */
 export function detectReplayFormat(data) {
   if (!isObject(data)) return null;
+  if (typeof data.format === "string" && data.format.startsWith("metafinder-replay/") && isObject(data.initial?.state) && Array.isArray(data.moves)) return "metafinder-replay";
   if (data.type === "result" && Array.isArray(data.self_play?.sample_game?.moves)) return "metafinder";
   if (Array.isArray(data.frames) && isObject(data.map) && Array.isArray(data.unitDefs)) return "original";
   return null;
@@ -148,6 +151,59 @@ async function fromMetafinder(data, { maps, dataDirectory }) {
   };
 }
 
+// ---- MetaFinder replay format ----
+
+async function fromMetafinderReplay(data, { maps, dataDirectory }) {
+  const adapter = await import("../metafinder/adapter.js");
+  const referee = isObject(data.referee_config) ? data.referee_config : {};
+  const mapName = String(referee.map ?? "").trim().toLowerCase();
+  const liveMap = maps.find((map) => map.name.trim().toLowerCase() === mapName || map.id === referee.map);
+  const players = Array.isArray(data.initial.state.seats) ? data.initial.state.seats.length : 2;
+  const game = { 2: adapter.GAME, 3: adapter.GAME3, 4: adapter.GAME4 }[players];
+  if (!game) fail(`MetaFinder replay has ${players} players; Seize supports 2–4.`);
+
+  // Only used for the map and unit definitions (and any fields a snapshot leaves out).
+  let base;
+  try {
+    base = game.newGame(data.seed ?? 0, rulesConfig(referee, liveMap ?? referee.map, dataDirectory));
+  } catch (error) {
+    fail(`Couldn't set up the MetaFinder game: ${error.message}`);
+  }
+  const names = Array.isArray(data.players) ? data.players : [];
+
+  const snapshots = [data.initial.state, ...data.moves.map((move) => move?.state)];
+  const frames = [];
+  let previous = null;
+  for (const [index, snapshot] of snapshots.entries()) {
+    if (!isObject(snapshot)) fail(`Move ${index} has no game state.`);
+    const { phase, sel, ...rest } = snapshot; // in-turn selection isn't part of a saved game
+    const frame = { ...structuredClone(base.game), ...structuredClone(rest), lastAction: null };
+    frame.seats.forEach((seat, i) => {
+      seat.name = names[i]?.ai ? `P${i} (${names[i].ai})` : `P${i}`;
+    });
+    const key = JSON.stringify({ ...frame, version: 0 });
+    if (key === previous) continue; // a selection or no-op step changes nothing visible
+    previous = key;
+    frame.version = frames.length + 1;
+    frames.push(frame);
+  }
+  const last = frames[frames.length - 1];
+  const alive = last.seats.filter((seat) => !seat.defeated);
+  if (alive.length === 1 && !last.winner) last.winner = alive[0].owner;
+
+  const map = base.ctx.map;
+  return {
+    roomName: text(`MetaFinder: ${map.name}`, "MetaFinder game", 32),
+    startedAt: null,
+    endedAt: null,
+    map: { ...validateMap(map), id: map.id },
+    unitDefs: base.ctx.unitDefs,
+    frames,
+    source: "metafinder",
+    note: data.result?.finished === false ? "This MetaFinder game hadn't finished when it was saved." : undefined,
+  };
+}
+
 /**
  * Turns an uploaded file into { format, replay } where replay is
  * { roomName, startedAt, endedAt, map, unitDefs, frames, source?, note? } (ready for the replay store).
@@ -156,6 +212,7 @@ export async function importReplay(buffer, { maps, dataDirectory }) {
   const data = parseBytes(buffer);
   const format = detectReplayFormat(data);
   if (format === "original") return { format, replay: fromOriginal(data) };
+  if (format === "metafinder-replay") return { format, replay: await fromMetafinderReplay(data, { maps, dataDirectory }) };
   if (format === "metafinder") return { format, replay: await fromMetafinder(data, { maps, dataDirectory }) };
-  fail("Unrecognised replay file. Upload a Seize replay or a MetaFinder result file.");
+  fail("Unrecognised replay file. Upload a Seize replay or a MetaFinder result/replay file.");
 }

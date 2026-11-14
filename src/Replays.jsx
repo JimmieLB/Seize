@@ -56,7 +56,7 @@ function Replays({ onExit, onWatch, isAdmin }) {
         body: await file.arrayBuffer(),
       });
       setNotice(
-        format === "metafinder"
+        format !== "original"
           ? `Converted "${file.name}" from MetaFinder format and saved it.${replay.note ? ` ${replay.note}` : ""}`
           : `Saved "${file.name}".`,
       );
