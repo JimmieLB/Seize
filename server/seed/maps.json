@@ -1,5 +1,5 @@
 [
-   {
+  {
     "id": "5c64848b-64e6-47bf-8128-12ce7f3f0087",
     "name": "Lean Street",
     "width": 15,
@@ -12,6 +12,12 @@
         "x": 6,
         "y": 0,
         "kind": "tower",
+        "owner": 0
+      },
+      {
+        "x": 10,
+        "y": 0,
+        "kind": "city",
         "owner": 0
       },
       {
@@ -43,6 +49,12 @@
         "y": 5,
         "kind": "factory",
         "owner": 1
+      },
+      {
+        "x": 14,
+        "y": 5,
+        "kind": "factory",
+        "owner": 0
       },
       {
         "x": 1,
@@ -87,6 +99,12 @@
         "owner": 0
       },
       {
+        "x": 0,
+        "y": 9,
+        "kind": "factory",
+        "owner": 0
+      },
+      {
         "x": 13,
         "y": 9,
         "kind": "factory",
@@ -117,6 +135,12 @@
         "owner": 0
       },
       {
+        "x": 4,
+        "y": 14,
+        "kind": "city",
+        "owner": 0
+      },
+      {
         "x": 8,
         "y": 14,
         "kind": "tower",
@@ -124,7 +148,8 @@
       }
     ],
     "updatedAt": "2026-11-13T17:33:29.937Z"
-  },{
+  },
+  {
     "id": "561b2d88-930a-4513-91f2-8350baf5f2c4",
     "name": "Test2",
     "width": 21,
