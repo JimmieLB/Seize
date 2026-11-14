@@ -7,5 +7,10 @@
     "move_candidates": 5,
     "unit_value_scale": 1.25,
     "objective_values": { "hq": 40000, "city": 1500, "factory": 5000, "airport": 4000, "tower": 3000 }
-  }
+  },
+  "tune": [
+    { "path": "unit_value_scale", "min": 0.8, "max": 3 },
+    "objective_values.hq", "objective_values.city", "objective_values.factory",
+    "objective_values.airport", "objective_values.tower"
+  ]
 }

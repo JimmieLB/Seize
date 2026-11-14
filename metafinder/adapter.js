@@ -200,6 +200,15 @@ function cloneGame(g) {
   };
 }
 
+/** The AI-scoring part of the settings: how positions are valued, never the rules. */
+function scoringSettings(config, ctx) {
+  return {
+    objectiveValues: valueTable("objective_values", config.objective_values, BUILDING_IDS, DEFAULT_OBJECTIVE_VALUES),
+    unitValues: valueTable("unit_values", config.unit_values, ctx.unitDefs.map((d) => d.id)),
+    unitValueScale: unitValueScale(config.unit_value_scale),
+  };
+}
+
 class SeizeState {
   constructor(ctx, settings, game, phase = "idle", sel = null) {
     this.ctx = ctx;
@@ -233,6 +242,16 @@ class SeizeState {
     const here = unitsAt(this.game, x, y);
     if (!isBridge(this.ctx.map, x, y)) return here;
     return here.filter((o) => layerOf(this.defOf(o)) === layerOf(def));
+  }
+
+  /**
+   * A copy that values positions with the AI-scoring keys of `config` (objective_values, unit_values,
+   * unit_value_scale) and keeps everything else, rules included. Lets the two seats of a game judge
+   * positions differently; `metafinder/node/tune.mjs` in MetaFinder uses it to compare settings.
+   */
+  withConfig(config) {
+    const settings = { ...this.settings, ...scoringSettings(config, this.ctx) };
+    return new SeizeState(this.ctx, settings, cloneGame(this.game), this.phase, this.sel);
   }
 
   // ------------------------------------------------------------------ required
@@ -548,9 +567,7 @@ class SeizeGame {
     const settings = {
       maxTurns: Number.parseInt(config.max_turns ?? 30, 10),
       moveCandidates: Number.parseInt(config.move_candidates ?? 8, 10),
-      objectiveValues: valueTable("objective_values", config.objective_values, BUILDING_IDS, DEFAULT_OBJECTIVE_VALUES),
-      unitValues: valueTable("unit_values", config.unit_values, ctx.unitDefs.map((d) => d.id)),
-      unitValueScale: unitValueScale(config.unit_value_scale),
+      ...scoringSettings(config, ctx),
     };
     return new SeizeState(ctx, settings, createGame(ctx.map, seats, ctx.income));
   }

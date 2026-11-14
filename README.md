@@ -189,6 +189,14 @@ How the AI values positions. These options change only its judgement, never the 
 
 `metafinder.json` ships a tested setup for Lean Street: `max_turns` 20, `move_candidates` 5, `unit_value_scale` 1.25 and moderate building values. Good MetaFinder settings to go with it are 300 iterations per move, 10 games and 5000 opening iterations, which finish in about 10–15 minutes.
 
+To improve these values automatically, run MetaFinder's tuner on this repo. It tunes the values listed under `"tune"` in `metafinder.json` by self-play, using `SeizeState.withConfig()` so the two sides can value positions differently:
+
+```bash
+node ../MetaFInder/metafinder/node/tune.mjs --repo . --write
+```
+
+With `--write`, it saves the tuned values into `metafinder.json` only if they clearly beat the old ones, so every run starts from the best values so far. The default run (30 rounds) takes about half an hour on a 12-core machine. Its checkpoint `metafinder.tuned.json` can be deleted afterwards.
+
 Keep building values within about 1–3× the price of the cheapest unit that can capture, or the AI will throw units away for captures it can't hold. To check the effect, compare runs in MetaFinder: look at the `captured · kind=…` events, the pick rates of `capture …` actions, and the result against random players.
 
 Not modelled: undo, resigning and disconnects. Games are long, so use small search settings in MetaFinder (about 100 iterations per move, 2–6 games, `max_turns` 12–20) or raise `METAFINDER_JOB_TIMEOUT`.

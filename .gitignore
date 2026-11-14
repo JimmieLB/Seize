@@ -5,3 +5,4 @@ server/data/
 *.log
 examples/   
 __pycache__/
+metafinder.tuned.json
