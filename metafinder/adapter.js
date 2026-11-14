@@ -316,7 +316,7 @@ class SeizeState {
       }
       this.phase = "act";
       const acts = unit.acted ? null : this.actActions(unit);
-      if (acts && acts.length === 1) applyWait(game, unit.id); // nothing else to do: skip the forced "wait"
+      if (acts && acts.length === 1 && acts[0] === WAIT) applyWait(game, unit.id); // nothing else to do: skip the forced "wait"
     } else if (kind === "attack" || kind === "blockade") {
       const before = new Map(game.units.map((u) => [u.id, u]));
       const blockades = game.blockades.length;
@@ -360,17 +360,29 @@ class SeizeState {
         actions.push(t.kind === "unit" ? `attack:${t.unit.id}` : `blockade:${t.x}:${t.y}`);
       }
     }
-    if (!captureError(game, ctx.unitDefs, game.active, unit.id)) actions.push(CAPTURE);
+    const canCapture = !captureError(game, ctx.unitDefs, game.active, unit.id);
+    if (canCapture) actions.push(CAPTURE);
     if (!unit.acted) {
       for (const cargo of cargoOf(game, unit)) {
         for (const t of dropTiles(game, ctx.map, ctx.unitDefs, unit, cargo)) actions.push(`drop:${cargo.id}:${t.x}:${t.y}`);
       }
     }
-    actions.push(WAIT);
+    // Waiting on a property you could capture is never better than capturing it, and offering it
+    // splits the search between two moves where only one matters.
+    if (!canCapture) actions.push(WAIT);
     return actions;
   }
 
+  /** True if this unit has a capture in progress on the tile it stands on. */
+  isCapturing(unit) {
+    return propertyAt(this.game, unit.x, unit.y)?.capture?.unitId === unit.id;
+  }
+
   moveActions(unit) {
+    // A unit part-way through a capture stays to finish it (it may still attack from there instead).
+    // Offering moves here made "select this unit" look bad to a low-budget search: nearly every move
+    // throws the progress away, so the unit was never selected again and the capture never finished.
+    if (this.isCapturing(unit)) return [HOLD];
     const { game, ctx } = this;
     const w = ctx.map.width;
     const d = this.defOf(unit);
