@@ -185,6 +185,9 @@ How the AI values positions. These options change only its judgement, never the 
 
 - `objective_values`: cash worth of owning each building kind, on top of its income. Defaults: `hq` 30000 (a finished HQ capture; partial captures count pro rata), `factory`/`airport`/`port` 6000, `barracks`/`tower` 4000, `flag` 3000, `city`/`silo` 2000. Example: `{"barracks": 8000, "city": 1000}`.
 - `unit_values`: cash worth of each unit type at full health (default: its price), e.g. `{"infantry": 2500}`. Unlike `units`, this doesn't change the unit's actual price.
+- `unit_value_scale`: multiplies the price of every unit not listed in `unit_values` (default 1). With 1, buying a unit doesn't change the score and the unit can die, so the AI learns to hoard cash. The default `metafinder.json` uses 1.25, so it builds an army instead.
+
+`metafinder.json` ships a tested setup for Lean Street: `max_turns` 20, `move_candidates` 5, `unit_value_scale` 1.25 and moderate building values. Good MetaFinder settings to go with it are 300 iterations per move, 10 games and 5000 opening iterations, which finish in about 10–15 minutes.
 
 Keep building values within about 1–3× the price of the cheapest unit that can capture, or the AI will throw units away for captures it can't hold. To check the effect, compare runs in MetaFinder: look at the `captured · kind=…` events, the pick rates of `capture …` actions, and the result against random players.
 

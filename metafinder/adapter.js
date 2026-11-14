@@ -26,6 +26,9 @@
 //                    e.g. {"barracks": 6000, "city": 1000}. Defaults: DEFAULT_OBJECTIVE_VALUES below.
 //   unit_values      what each unit type is worth at full health, in cash (default: its price),
 //                    e.g. {"infantry": 2500}. Used by heuristicValue() and the playout attack choice.
+//   unit_value_scale multiplies the price of every unit not listed in unit_values (default 1).
+//                    Above 1, a bought unit is worth more than the cash spent on it, so the AI builds
+//                    an army instead of hoarding funds (with 1, buying is score-neutral and units can die).
 
 import fs from "node:fs";
 import path from "node:path";
@@ -174,6 +177,13 @@ function valueTable(name, input, known, defaults = {}) {
   return out;
 }
 
+function unitValueScale(input) {
+  if (input == null) return 1;
+  const n = Number(input);
+  if (!Number.isFinite(n) || n <= 0 || n > 5) throw new Error("unit_value_scale must be a number above 0 and at most 5, e.g. 1.25");
+  return n;
+}
+
 const WAIT = "wait";
 const HOLD = "hold";
 const CAPTURE = "capture";
@@ -207,7 +217,7 @@ class SeizeState {
 
   /** What a unit of this type is worth to the AI at full health. */
   unitValue(def) {
-    return this.settings.unitValues[def.id] ?? def.price;
+    return this.settings.unitValues[def.id] ?? def.price * this.settings.unitValueScale;
   }
 
   unit(id) {
@@ -540,6 +550,7 @@ class SeizeGame {
       moveCandidates: Number.parseInt(config.move_candidates ?? 8, 10),
       objectiveValues: valueTable("objective_values", config.objective_values, BUILDING_IDS, DEFAULT_OBJECTIVE_VALUES),
       unitValues: valueTable("unit_values", config.unit_values, ctx.unitDefs.map((d) => d.id)),
+      unitValueScale: unitValueScale(config.unit_value_scale),
     };
     return new SeizeState(ctx, settings, createGame(ctx.map, seats, ctx.income));
   }

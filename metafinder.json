@@ -1,5 +1,11 @@
 {
   "runtime": "node",
   "entry": "metafinder/adapter.js:GAME",
-  "config": { "map": "Lean Street", "max_turns": 30, "move_candidates": 8 }
+  "config": {
+    "map": "Lean Street",
+    "max_turns": 20,
+    "move_candidates": 5,
+    "unit_value_scale": 1.25,
+    "objective_values": { "hq": 40000, "city": 1500, "factory": 5000, "airport": 4000, "tower": 3000 }
+  }
 }
